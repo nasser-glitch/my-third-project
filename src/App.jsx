@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { TEAMS, DEMO_NAMES } from './data.js';
-import { shuffle, getTeam, fmt, playThwack, findTeamId, getLoserTeamId, getWinnerTeamId, isLive } from './utils.js';
+import { TEAMS, getDemoNames } from './data.js';
+import { shuffle, getTeam, fmt, playThwack, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints } from './utils.js';
 import { fetchTodaysMatches, fetchAllMatches, fetchStandings, fetchNextMatch } from './api.js';
 
 import Confetti     from './components/Confetti.jsx';
@@ -8,7 +8,57 @@ import PaniniCard   from './components/PaniniCard.jsx';
 import TeamPill     from './components/TeamPill.jsx';
 import Ticker       from './components/Ticker.jsx';
 import Fixtures     from './components/Fixtures.jsx';
+import GroupTable   from './components/GroupTable.jsx';
 import ToastContainer from './components/Toast.jsx';
+
+// ── computeWinner ─────────────────────────────────────────────────
+// Finds the sweepstake winner. If two participants share the WC-winning team,
+// their second team's furthest stage reached acts as tiebreaker.
+function computeWinner(assignments, participants, allMatches) {
+  if (!assignments || !allMatches?.length) return null;
+  const finalMatch = allMatches.find(m => m.stage === 'FINAL' && m.status === 'FINISHED');
+  if (!finalMatch) return null;
+  const champId = getWinnerTeamId(finalMatch);
+  if (!champId) return null;
+
+  const owners = Object.entries(assignments)
+    .filter(([, tids]) => tids.includes(champId))
+    .map(([idx, tids]) => {
+      const secondTeam = tids.find(tid => tid !== champId) ?? null;
+      const progress = secondTeam ? computeTeamProgress(secondTeam, allMatches) : 0;
+      return { idx: +idx, name: participants[+idx], champTeamId: champId, secondTeam, progress };
+    });
+
+  if (!owners.length) return null;
+  owners.sort((a, b) => b.progress - a.progress);
+  return { winner: owners[0], isTiebreak: owners.length > 1, runnersUp: owners.slice(1) };
+}
+
+// ── WinnerBanner ──────────────────────────────────────────────────
+function WinnerBanner({ result }) {
+  const { winner, isTiebreak, runnersUp } = result;
+  const champTeam  = getTeam(winner.champTeamId);
+  const secondTeam = winner.secondTeam ? getTeam(winner.secondTeam) : null;
+  const rival      = isTiebreak ? runnersUp[0] : null;
+  const rivalTeam  = rival?.secondTeam ? getTeam(rival.secondTeam) : null;
+
+  return (
+    <div className="winner-banner">
+      <div className="winner-crown">🏆</div>
+      <div className="winner-name">{(winner.name || 'Winner').toUpperCase()} WINS!</div>
+      <div className="winner-detail">
+        {champTeam?.flag} {champTeam?.name} won the World Cup
+      </div>
+      {isTiebreak && rival && (
+        <div className="winner-tiebreak">
+          Tiebreaker — {winner.name}&apos;s {secondTeam?.flag} {secondTeam?.name} reached{' '}
+          <strong>{PROGRESS_LABELS[winner.progress]}</strong> vs {rival.name}&apos;s{' '}
+          {rivalTeam?.flag} {rivalTeam?.name} ({PROGRESS_LABELS[rival.progress]})
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Helpers ──────────────────────────────────────────────────────
 function stripColor(group) {
@@ -92,22 +142,31 @@ function computeEliminations(allMatches, standings, assignments, participants, p
   return { newStatus, toasts };
 }
 
+// ── localStorage persistence ──────────────────────────────────────
+const STORAGE_KEY = 'wc2026_sweepstake';
+function loadState() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+  catch { return null; }
+}
+const _saved = loadState();
+
 // ═════════════════════════════════════════════════════════════════
 // APP
 // ═════════════════════════════════════════════════════════════════
 export default function App() {
   // ── Sweepstake state ──────────────────────────────────────────
   const [tab, setTab] = useState('setup');
-  const [participants, setParticipants] = useState([...DEMO_NAMES]);
-  const [assignments, setAssignments] = useState(null);
-  const [teamStatus, setTeamStatus] = useState({});
-  const [buyIn, setBuyIn] = useState('5');
+  const [participants, setParticipants] = useState(_saved?.participants ?? getDemoNames(24));
+  const [assignments, setAssignments] = useState(_saved?.assignments ?? null);
+  const [teamStatus, setTeamStatus] = useState(_saved?.teamStatus ?? {});
+  const [buyIn, setBuyIn] = useState(_saved?.buyIn ?? '5');
   const [drawing, setDrawing] = useState(false);
-  const [revealed, setRevealed] = useState(0);
+  const [revealed, setRevealed] = useState(_saved?.assignments ? Object.keys(_saved.assignments).length : 0);
   const [query, setQuery] = useState('');
   const [confetti, setConfetti] = useState(false);
-  const [dupIds, setDupIds] = useState([]);
+  const [dupIds, setDupIds] = useState(_saved?.dupIds ?? []);
   const [copied, setCopied] = useState(false);
+  const [winnerResult, setWinnerResult] = useState(null);
 
   // ── API state ─────────────────────────────────────────────────
   const [todaysMatches, setTodaysMatches] = useState([]);
@@ -131,6 +190,15 @@ export default function App() {
   useEffect(() => { statusRef.current  = teamStatus;     }, [teamStatus]);
   useEffect(() => { assignRef.current  = assignments;    }, [assignments]);
   useEffect(() => { partRef.current    = participants;   }, [participants]);
+
+  // ── Persist to localStorage ───────────────────────────────────
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(
+        { participants, assignments, teamStatus, buyIn, dupIds }
+      ));
+    } catch {}
+  }, [participants, assignments, teamStatus, buyIn, dupIds]);
 
   // ── API refresh ───────────────────────────────────────────────
   const doRefresh = useCallback(async (force = false) => {
@@ -215,6 +283,12 @@ export default function App() {
     }
   }, [allMatches, standings]);
 
+  // ── Winner computation ────────────────────────────────────────
+  useEffect(() => {
+    if (!assignments) { setWinnerResult(null); return; }
+    setWinnerResult(computeWinner(assignments, participants, allMatches));
+  }, [allMatches, assignments, participants, teamStatus]);
+
   const dismissToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
@@ -222,18 +296,30 @@ export default function App() {
   // ── Draw ──────────────────────────────────────────────────────
   const doDraw = useCallback(() => {
     if (drawing) return;
-    const ids = TEAMS.map(t => t.id);
-    const shuffled = shuffle(ids);
-    // Duplicate 2 randomly chosen teams → 50 tickets for 50 participants
-    let d1 = shuffled[Math.floor(Math.random() * 48)];
-    let d2 = shuffled[Math.floor(Math.random() * 47)];
-    if (d2 === d1) d2 = shuffled[(shuffled.indexOf(d1) + 1) % 48];
-    const tickets = shuffle([...shuffled, d1, d2]);
+    const n = participants.filter(Boolean).length;
+    if (n < 2) return;
+    const totalSlots = n * 2; // always 2 teams per person
+    const shuffledIds = shuffle(TEAMS.map(t => t.id));
 
+    let pool, newDupIds = [];
+    if (totalSlots <= TEAMS.length) {
+      // ≤24 participants: use only 2N teams, rest sit out (no duplicates)
+      pool = shuffledIds.slice(0, totalSlots);
+    } else {
+      // >24 participants: duplicate (2N−48) teams so everyone still gets 2
+      const extraNeeded = totalSlots - TEAMS.length;
+      const dupes = shuffle([...shuffledIds]).slice(0, extraNeeded);
+      newDupIds = dupes;
+      pool = shuffle([...shuffledIds, ...dupes]);
+    }
+
+    // Assign 2 teams per participant
     const ass = {};
-    participants.forEach((_, i) => { ass[i] = [tickets[i]]; });
+    participants.forEach((_, i) => {
+      ass[i] = [pool[i * 2], pool[i * 2 + 1]];
+    });
 
-    setDupIds([d1, d2]);
+    setDupIds(newDupIds);
     setAssignments(ass);
     setTeamStatus({});
     setRevealed(0);
@@ -245,7 +331,7 @@ export default function App() {
       c++;
       setRevealed(c);
       playThwack(c);
-      if (c >= participants.length) {
+      if (c >= n) {
         clearInterval(drawRef.current);
         setDrawing(false);
         setConfetti(true);
@@ -314,6 +400,18 @@ export default function App() {
     [participants, query]
   );
 
+  // ── Points leaderboard ───────────────────────────────────────
+  const leaderboard = useMemo(() => {
+    if (!assignments) return [];
+    return participants
+      .map((name, i) => ({
+        name, i,
+        tids: assignments[i] || [],
+        pts: computeParticipantPoints(assignments[i] || [], allMatches),
+      }))
+      .sort((a, b) => b.pts - a.pts);
+  }, [assignments, participants, allMatches]);
+
   // ── Sorted leaderboard (champion → active → eliminated) ──────
   const sortedParticipants = useMemo(() => {
     if (!assignments) return [];
@@ -366,6 +464,7 @@ export default function App() {
           { id: 'setup',    label: '👥 Setup' },
           { id: 'draw',     label: '🎲 Draw' },
           { id: 'fixtures', label: '📅 Fixtures' },
+          { id: 'groups',   label: '🏟 Groups' },
           { id: 'prizes',   label: '💰 Prizes' },
         ].map(t => (
           <button
@@ -384,13 +483,20 @@ export default function App() {
         {tab === 'setup' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '.5rem', marginBottom: '1rem' }}>
-              <h2 className="sec-hdr" style={{ margin: 0, border: 'none' }}>
-                Participants &nbsp;
-                <span style={{ color: 'var(--ink)', fontWeight: 400, fontSize: '1rem' }}>({participants.length})</span>
-              </h2>
-              <button className="btn-outline" onClick={() => setParticipants([...DEMO_NAMES])}>
-                Load Demo Names
-              </button>
+              <h2 className="sec-hdr" style={{ margin: 0, border: 'none' }}>Participants</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', flexWrap: 'wrap' }}>
+                <button className="count-btn" onClick={() => setParticipants(p => p.length > 2 ? p.slice(0, -1) : p)}>−</button>
+                <span className="count-display">{participants.length}</span>
+                <button className="count-btn" onClick={() => setParticipants(p => [...p, ''])}>+</button>
+                <button className="btn-outline" onClick={() => setParticipants(getDemoNames(participants.length))}>
+                  Load Demo Names
+                </button>
+              </div>
+            </div>
+            <div style={{ fontFamily: 'Special Elite,cursive', fontSize: '.82rem', color: '#888', marginBottom: '.75rem' }}>
+              Each person gets <strong>2 teams</strong> · {participants.length <= 24
+                ? `${48 - participants.length * 2} teams will sit out`
+                : `${participants.length * 2 - 48} team${participants.length * 2 - 48 > 1 ? 's' : ''} shared between 2 people`}
             </div>
 
             <div className="rbox" data-label="PARTICIPANT LIST" style={{ marginBottom: '1.25rem' }}>
@@ -409,6 +515,11 @@ export default function App() {
                       placeholder={`Participant ${i + 1}`}
                       style={{ fontSize: '.85rem', padding: '.28rem .5rem' }}
                     />
+                    <button
+                      className="remove-btn"
+                      onClick={() => setParticipants(p => p.filter((_, idx) => idx !== i))}
+                      disabled={participants.length <= 2}
+                    >×</button>
                   </div>
                 ))}
               </div>
@@ -482,10 +593,13 @@ export default function App() {
 
                 {dupIds.length > 0 && (
                   <div style={{ marginBottom: '.9rem', padding: '.45rem .9rem', background: 'rgba(200,151,28,.15)', border: '2px solid var(--gold)', borderRadius: '4px', fontSize: '.83rem', fontFamily: 'Courier Prime,monospace' }}>
-                    <strong>⚠ Shared teams</strong> (2 participants each): &nbsp;
-                    {dupIds.map(id => { const t = getTeam(id); return `${t.flag} ${t.name}`; }).join(' & ')}
+                    <strong>⚠ {dupIds.length} team{dupIds.length > 1 ? 's' : ''} shared</strong> (2 participants each):&nbsp;
+                    {dupIds.map(id => { const t = getTeam(id); return `${t.flag} ${t.name}`; }).join(', ')}
                   </div>
                 )}
+
+                {/* Winner banner */}
+                {winnerResult && <WinnerBanner result={winnerResult} />}
 
                 {/* Search */}
                 <div style={{ position: 'relative', maxWidth: '300px', marginBottom: '1rem' }}>
@@ -590,6 +704,17 @@ export default function App() {
           </div>
         )}
 
+        {/* ══════════════ GROUPS ══════════════ */}
+        {tab === 'groups' && (
+          <div>
+            <h2 className="sec-hdr">Group Standings</h2>
+            <GroupTable standings={standings} assignments={assignments} participants={participants} />
+            {lastUpdated && (
+              <div className="last-updated">Last updated: {lastUpdated.toLocaleTimeString('en-GB')}</div>
+            )}
+          </div>
+        )}
+
         {/* ══════════════ PRIZES ══════════════ */}
         {tab === 'prizes' && (
           <div>
@@ -630,24 +755,28 @@ export default function App() {
 
             <div className="divider">⚽</div>
 
+            {winnerResult && <WinnerBanner result={winnerResult} />}
+
             {assignments ? (
               <>
-                <h3 className="sec-hdr">Current Standings</h3>
+                <h3 className="sec-hdr">Points Leaderboard</h3>
+                <div style={{ fontFamily: 'Special Elite,cursive', fontSize: '.82rem', color: '#888', marginBottom: '.75rem' }}>
+                  Points awarded per round reached — Group Stage=1 · R32=3 · R16=6 · QF=10 · SF=15 · 3rd=20 · Final=25 · Champion=40
+                </div>
                 <div style={{ overflowX: 'auto' }}>
                   <table className="tbl">
                     <thead>
-                      <tr><th>Participant</th><th>Team(s)</th><th>Status</th></tr>
+                      <tr><th>#</th><th>Participant</th><th>Team(s)</th><th>Points</th></tr>
                     </thead>
                     <tbody>
-                      {sortedParticipants.map(({ n, i, tids, best }) => (
-                        <tr key={i}>
-                          <td style={{ fontFamily: 'Special Elite,cursive', whiteSpace: 'nowrap' }}>{n}</td>
-                          <td>{tids.map(tid => <TeamPill key={tid} tid={tid} status={teamStatus[tid] || 'active'} />)}</td>
-                          <td>
-                            <span className={`badge ${best === 'active' ? 'b-active' : best === 'eliminated' ? 'b-elim' : 'b-champ'}`}>
-                              {best === 'active' ? 'Active' : best === 'eliminated' ? 'Eliminated' : '🏆 Champion'}
-                            </span>
+                      {leaderboard.map(({ name, i, tids, pts }, rank) => (
+                        <tr key={i} className={rank === 0 ? 'lb-rank-1' : rank === 1 ? 'lb-rank-2' : rank === 2 ? 'lb-rank-3' : ''}>
+                          <td style={{ fontFamily: 'Oswald,sans-serif', fontWeight: 700, color: 'var(--green)', fontSize: '.88rem', width: '2.5rem' }}>
+                            {rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank + 1}
                           </td>
+                          <td style={{ fontFamily: 'Special Elite,cursive', fontSize: '.95rem', whiteSpace: 'nowrap' }}>{name}</td>
+                          <td>{tids.map(tid => <TeamPill key={tid} tid={tid} status={teamStatus[tid] || 'active'} />)}</td>
+                          <td className="pts-cell">{pts}<span className="pts-label">pts</span></td>
                         </tr>
                       ))}
                     </tbody>
@@ -656,7 +785,7 @@ export default function App() {
               </>
             ) : (
               <div style={{ textAlign: 'center', padding: '2rem', fontFamily: 'Special Elite,cursive', color: '#888', fontSize: '1rem' }}>
-                Complete the draw first to see standings.
+                Complete the draw first to see the leaderboard.
               </div>
             )}
 

@@ -66,6 +66,12 @@ export const DEMO_NAMES = [
   'Xavier Rivera','Yvette Cooper',
 ];
 
+export function getDemoNames(n) {
+  return Array.from({ length: n }, (_, i) =>
+    i < DEMO_NAMES.length ? DEMO_NAMES[i] : `Participant ${i + 1}`
+  );
+}
+
 export const CONFETTI_COLORS = [
   '#C41E3A','#C8971C','#F0C040','#2D5A1B','#4A8A2D','#ffffff','#0F1B4C',
 ];

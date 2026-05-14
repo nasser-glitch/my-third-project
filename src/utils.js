@@ -133,6 +133,41 @@ export function formatRoundLabel(stage, group) {
   return labels[stage] || stage;
 }
 
+// How far a team progressed — returns a numeric score (higher = further).
+// Used for the single-winner tiebreaker when two participants share the champion team.
+const STAGE_SCORE = {
+  GROUP_STAGE: 1, LAST_32: 2, LAST_16: 3,
+  QUARTER_FINALS: 4, SEMI_FINALS: 5, THIRD_PLACE: 6, FINAL: 7,
+};
+export const PROGRESS_LABELS = [
+  '—', 'Group Stage', 'Round of 32', 'Round of 16',
+  'Quarter-Finals', 'Semi-Finals', 'Third Place', 'Final', '🏆 World Champions',
+];
+
+export const POINTS_MAP = [0, 1, 3, 6, 10, 15, 20, 25, 40];
+
+export function computeParticipantPoints(tids, allMatches) {
+  return tids.reduce(
+    (sum, tid) => sum + (POINTS_MAP[computeTeamProgress(tid, allMatches)] ?? 0),
+    0
+  );
+}
+
+export function computeTeamProgress(teamId, allMatches) {
+  let best = 0;
+  allMatches.filter(m => m.status === 'FINISHED').forEach(m => {
+    const hId = findTeamId(m.homeTeam);
+    const aId = findTeamId(m.awayTeam);
+    if (hId !== teamId && aId !== teamId) return;
+    if (m.stage === 'FINAL' && getWinnerTeamId(m) === teamId) {
+      best = Math.max(best, 8);
+    } else {
+      best = Math.max(best, STAGE_SCORE[m.stage] ?? 0);
+    }
+  });
+  return best;
+}
+
 // Sort order for stages (ascending tournament order)
 export function stageOrder(stage) {
   const order = {
