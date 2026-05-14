@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { TEAMS, getDemoNames } from './data.js';
-import { shuffle, getTeam, fmt, playThwack, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints } from './utils.js';
+import { shuffle, getTeam, fmt, playThwack, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel } from './utils.js';
 import { fetchTodaysMatches, fetchAllMatches, fetchStandings, fetchNextMatch } from './api.js';
+import { sendDrawEmail, sendAdvanceEmail, sendFinalEmail } from './email.js';
+import supabase, { loadSweepstake, saveSweepstake } from './supabase.js';
 
 import Confetti     from './components/Confetti.jsx';
 import PaniniCard   from './components/PaniniCard.jsx';
@@ -142,30 +144,24 @@ function computeEliminations(allMatches, standings, assignments, participants, p
   return { newStatus, toasts };
 }
 
-// ── localStorage persistence ──────────────────────────────────────
-const STORAGE_KEY = 'wc2026_sweepstake';
-function loadState() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
-  catch { return null; }
-}
-const _saved = loadState();
-
 // ═════════════════════════════════════════════════════════════════
 // APP
 // ═════════════════════════════════════════════════════════════════
 export default function App() {
   // ── Sweepstake state ──────────────────────────────────────────
-  const [tab, setTab] = useState('setup');
-  const [participants, setParticipants] = useState(_saved?.participants ?? getDemoNames(24));
-  const [assignments, setAssignments] = useState(_saved?.assignments ?? null);
-  const [teamStatus, setTeamStatus] = useState(_saved?.teamStatus ?? {});
-  const [buyIn, setBuyIn] = useState(_saved?.buyIn ?? '5');
-  const [drawing, setDrawing] = useState(false);
-  const [revealed, setRevealed] = useState(_saved?.assignments ? Object.keys(_saved.assignments).length : 0);
-  const [query, setQuery] = useState('');
-  const [confetti, setConfetti] = useState(false);
-  const [dupIds, setDupIds] = useState(_saved?.dupIds ?? []);
-  const [copied, setCopied] = useState(false);
+  const [loading, setLoading]           = useState(true);
+  const [tab, setTab]                   = useState('setup');
+  const [participants, setParticipants] = useState(getDemoNames(24));
+  const [assignments,  setAssignments]  = useState(null);
+  const [teamStatus,   setTeamStatus]   = useState({});
+  const [buyIn,        setBuyIn]        = useState('5');
+  const [drawing,      setDrawing]      = useState(false);
+  const [revealed,     setRevealed]     = useState(0);
+  const [query,        setQuery]        = useState('');
+  const [confetti,     setConfetti]     = useState(false);
+  const [dupIds,       setDupIds]       = useState([]);
+  const [participantEmails, setParticipantEmails] = useState(Array(24).fill(''));
+  const [copied,       setCopied]       = useState(false);
   const [winnerResult, setWinnerResult] = useState(null);
 
   // ── API state ─────────────────────────────────────────────────
@@ -185,20 +181,68 @@ export default function App() {
   const assignRef   = useRef(assignments);
   const partRef     = useRef(participants);
   const pollRef     = useRef(null);
+  const emailedMatchIdsRef = useRef(new Set());
+  const saveTimerRef       = useRef(null);
 
   useEffect(() => { todayRef.current   = todaysMatches;  }, [todaysMatches]);
   useEffect(() => { statusRef.current  = teamStatus;     }, [teamStatus]);
   useEffect(() => { assignRef.current  = assignments;    }, [assignments]);
   useEffect(() => { partRef.current    = participants;   }, [participants]);
 
-  // ── Persist to localStorage ───────────────────────────────────
+  // ── Load from Supabase on first open ─────────────────────────
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(
-        { participants, assignments, teamStatus, buyIn, dupIds }
-      ));
-    } catch {}
-  }, [participants, assignments, teamStatus, buyIn, dupIds]);
+    loadSweepstake().then(data => {
+      if (data) {
+        const names = data.participants ?? getDemoNames(24);
+        setParticipants(names);
+        setAssignments(data.assignments ?? null);
+        setTeamStatus(data.team_status ?? {});
+        setBuyIn(data.buy_in ?? '5');
+        setDupIds(data.dup_ids ?? []);
+        setParticipantEmails(data.participant_emails ?? Array(names.length).fill(''));
+        if (data.assignments) setRevealed(Object.keys(data.assignments).length);
+        emailedMatchIdsRef.current = new Set(data.emailed_match_ids ?? []);
+      }
+      setLoading(false);
+    });
+  }, []);
+
+  // ── Save to Supabase (debounced 1 second) ─────────────────────
+  useEffect(() => {
+    if (loading) return;
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveSweepstake({
+        participants,
+        assignments,
+        team_status: teamStatus,
+        buy_in: buyIn,
+        dup_ids: dupIds,
+        participant_emails: participantEmails,
+      });
+    }, 1000);
+  }, [participants, assignments, teamStatus, buyIn, dupIds, participantEmails, loading]);
+
+  // ── Real-time sync: update all open tabs when DB changes ──────
+  useEffect(() => {
+    const channel = supabase
+      .channel('sweepstake-live')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'sweepstake' },
+        payload => {
+          const row = payload.new;
+          setParticipants(row.participants ?? []);
+          setAssignments(row.assignments ?? null);
+          setTeamStatus(row.team_status ?? {});
+          setBuyIn(row.buy_in ?? '5');
+          setDupIds(row.dup_ids ?? []);
+          setParticipantEmails(row.participant_emails ?? []);
+        }
+      )
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, []);
 
   // ── API refresh ───────────────────────────────────────────────
   const doRefresh = useCallback(async (force = false) => {
@@ -283,6 +327,31 @@ export default function App() {
     }
   }, [allMatches, standings]);
 
+  // ── Advancement email notifications ───────────────────────────
+  useEffect(() => {
+    if (!assignments) return;
+    const KNOCKOUT = ['LAST_32','LAST_16','QUARTER_FINALS','SEMI_FINALS','FINAL'];
+    allMatches
+      .filter(m => m.status === 'FINISHED' && KNOCKOUT.includes(m.stage))
+      .forEach(m => {
+        if (emailedMatchIdsRef.current.has(m.id)) return;
+        emailedMatchIdsRef.current.add(m.id);
+        saveSweepstake({ emailed_match_ids: [...emailedMatchIdsRef.current] });
+        const winnerId = getWinnerTeamId(m);
+        if (!winnerId) return;
+        const stageLabel = formatRoundLabel(m.stage, null);
+        Object.entries(assignments).forEach(([idx, tids]) => {
+          if (!tids.includes(winnerId)) return;
+          const email = participantEmails[+idx];
+          const name  = participants[+idx];
+          const team  = getTeam(winnerId);
+          if (email?.endsWith('@autone.io') && team) {
+            sendAdvanceEmail(email, name, `${team.flag} ${team.name}`, stageLabel);
+          }
+        });
+      });
+  }, [allMatches, assignments, participants, participantEmails]);
+
   // ── Winner computation ────────────────────────────────────────
   useEffect(() => {
     if (!assignments) { setWinnerResult(null); return; }
@@ -336,9 +405,21 @@ export default function App() {
         setDrawing(false);
         setConfetti(true);
         setTimeout(() => setConfetti(false), 8000);
+        participants.forEach((name, pi) => {
+          const email = participantEmails[pi];
+          if (!email || !email.endsWith('@autone.io')) return;
+          const [t1, t2] = ass[pi] || [];
+          const t1obj = getTeam(t1);
+          const t2obj = getTeam(t2);
+          sendDrawEmail(
+            email, name,
+            t1obj ? `${t1obj.flag} ${t1obj.name}` : '?',
+            t2obj ? `${t2obj.flag} ${t2obj.name}` : '?'
+          );
+        });
       }
     }, 160);
-  }, [drawing, participants]);
+  }, [drawing, participants, participantEmails]);
 
   const doReset = useCallback(() => {
     clearInterval(drawRef.current);
@@ -429,6 +510,14 @@ export default function App() {
   // ═══════════════════════════════════════════════════════════════
   // RENDER
   // ═══════════════════════════════════════════════════════════════
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'Special Elite, cursive', fontSize: '1.2rem', color: '#2D5A1B' }}>
+        ⏳ Loading sweepstake…
+      </div>
+    );
+  }
+
   return (
     <div>
       <Confetti active={confetti} />
@@ -485,9 +574,9 @@ export default function App() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '.5rem', marginBottom: '1rem' }}>
               <h2 className="sec-hdr" style={{ margin: 0, border: 'none' }}>Participants</h2>
               <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', flexWrap: 'wrap' }}>
-                <button className="count-btn" onClick={() => setParticipants(p => p.length > 2 ? p.slice(0, -1) : p)}>−</button>
+                <button className="count-btn" onClick={() => { setParticipants(p => p.length > 2 ? p.slice(0, -1) : p); setParticipantEmails(p => p.length > 2 ? p.slice(0, -1) : p); }}>−</button>
                 <span className="count-display">{participants.length}</span>
-                <button className="count-btn" onClick={() => setParticipants(p => [...p, ''])}>+</button>
+                <button className="count-btn" onClick={() => { setParticipants(p => [...p, '']); setParticipantEmails(p => [...p, '']); }}>+</button>
                 <button className="btn-outline" onClick={() => setParticipants(getDemoNames(participants.length))}>
                   Load Demo Names
                 </button>
@@ -515,9 +604,23 @@ export default function App() {
                       placeholder={`Participant ${i + 1}`}
                       style={{ fontSize: '.85rem', padding: '.28rem .5rem' }}
                     />
+                    <input
+                      className="inp inp-email"
+                      type="email"
+                      value={participantEmails[i] || ''}
+                      onChange={e => {
+                        const next = [...participantEmails];
+                        next[i] = e.target.value;
+                        setParticipantEmails(next);
+                      }}
+                      placeholder="name@autone.io"
+                    />
                     <button
                       className="remove-btn"
-                      onClick={() => setParticipants(p => p.filter((_, idx) => idx !== i))}
+                      onClick={() => {
+                        setParticipants(p => p.filter((_, idx) => idx !== i));
+                        setParticipantEmails(p => p.filter((_, idx) => idx !== i));
+                      }}
                       disabled={participants.length <= 2}
                     >×</button>
                   </div>
@@ -756,6 +859,28 @@ export default function App() {
             <div className="divider">⚽</div>
 
             {winnerResult && <WinnerBanner result={winnerResult} />}
+
+            {assignments && (
+              <div style={{ textAlign: 'center', margin: '1rem 0' }}>
+                <button
+                  className="btn-outline"
+                  disabled={!participants.some((_, i) => participantEmails[i]?.endsWith('@autone.io'))}
+                  onClick={() => {
+                    const winnerName = winnerResult?.winner?.name ?? 'TBD';
+                    const lbText = leaderboard
+                      .map((row, rank) => `${rank + 1}. ${row.name} — ${row.pts} pts`)
+                      .join('\n');
+                    participants.forEach((name, i) => {
+                      const email = participantEmails[i];
+                      if (!email?.endsWith('@autone.io')) return;
+                      sendFinalEmail(email, name, winnerName, lbText);
+                    });
+                  }}
+                >
+                  📧 Email Final Results to All
+                </button>
+              </div>
+            )}
 
             {assignments ? (
               <>

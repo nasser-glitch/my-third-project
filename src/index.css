@@ -316,6 +316,7 @@ body::after {
   font-size: .9rem; color: var(--ink); width: 100%;
 }
 .inp:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(45,90,27,.2); }
+.inp-email { width: 180px; font-size: .78rem; color: #888; margin-left: 6px; }
 
 /* ── TABLE ────────────────────────────────── */
 .tbl { width: 100%; border-collapse: collapse; font-family: 'Courier Prime', monospace; }
