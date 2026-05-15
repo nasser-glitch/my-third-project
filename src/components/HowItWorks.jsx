@@ -4,7 +4,7 @@ export default function HowItWorks() {
       <p className="hiw-intro">
         Everyone is randomly assigned <strong>2 countries</strong> at draw time.
         Points are earned for each of your teams throughout the tournament.
-        The participant with the most total points wins a <strong>digital trophy</strong>. 🏆
+        The participant with the most total points wins. 🏆
       </p>
 
       <div className="hiw-section">

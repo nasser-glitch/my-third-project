@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { TEAMS } from './data.js';
-import { shuffle, getTeam, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel } from './utils.js';
+import { shuffle, getTeam, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel, getWcRank } from './utils.js';
 import { fetchTodaysMatches, fetchAllMatches, fetchStandings, fetchNextMatch } from './api.js';
 import { sendDrawEmail } from './email.js';
 import supabase, { loadSweepstake, saveSweepstake } from './supabase.js';
@@ -711,6 +711,9 @@ export default function App() {
                       <div key={tid} className={`my-team-card my-team-card--${s}`}>
                         <div className="my-team-flag">{t?.flag}</div>
                         <div className="my-team-name">{t?.name}</div>
+                        {getWcRank(tid) && (
+                          <div className="my-team-wcrank">WC Rank #{getWcRank(tid)}</div>
+                        )}
                         <div className="my-team-pts">{pts} pts</div>
                         {s === 'eliminated' && <div className="my-team-status">OUT</div>}
                         {s === 'champion'   && <div className="my-team-status">🏆 CHAMPION</div>}
