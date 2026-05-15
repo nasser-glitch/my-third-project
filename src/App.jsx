@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { TEAMS } from './data.js';
-import { shuffle, getTeam, fmt, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel } from './utils.js';
+import { shuffle, getTeam, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel } from './utils.js';
 import { fetchTodaysMatches, fetchAllMatches, fetchStandings, fetchNextMatch } from './api.js';
 import { sendDrawEmail } from './email.js';
 import supabase, { loadSweepstake, saveSweepstake } from './supabase.js';
@@ -161,7 +161,6 @@ export default function App() {
   const [participants,       setParticipants]       = useState([]);
   const [assignments,        setAssignments]        = useState(null);
   const [teamStatus,         setTeamStatus]         = useState({});
-  const [buyIn,              setBuyIn]              = useState('5');
   const [dupIds,             setDupIds]             = useState([]);
   const [participantEmails,  setParticipantEmails]  = useState([]);
   const [adminMode,          setAdminMode]          = useState(false);
@@ -207,7 +206,6 @@ export default function App() {
         setParticipants(names);
         setAssignments(data.assignments ?? null);
         setTeamStatus(data.team_status ?? {});
-        setBuyIn(data.buy_in ?? '5');
         setDupIds(data.dup_ids ?? []);
         setParticipantEmails(data.participant_emails ?? Array(names.length).fill(''));
         emailedMatchIdsRef.current = new Set(data.emailed_match_ids ?? []);
@@ -225,12 +223,11 @@ export default function App() {
         participants,
         assignments,
         team_status: teamStatus,
-        buy_in: buyIn,
         dup_ids: dupIds,
         participant_emails: participantEmails,
       });
     }, 1000);
-  }, [participants, assignments, teamStatus, buyIn, dupIds, participantEmails, loading]);
+  }, [participants, assignments, teamStatus, dupIds, participantEmails, loading]);
 
   // ── Real-time sync across all open tabs ──────────────────────
   useEffect(() => {
@@ -244,7 +241,6 @@ export default function App() {
           setParticipants(row.participants ?? []);
           setAssignments(row.assignments ?? null);
           setTeamStatus(row.team_status ?? {});
-          setBuyIn(row.buy_in ?? '5');
           setDupIds(row.dup_ids ?? []);
           setParticipantEmails(row.participant_emails ?? []);
         }
@@ -431,8 +427,6 @@ export default function App() {
   }, [participants, participantEmails, assignments, dupIds, myEmail]);
 
   // ── Derived values ────────────────────────────────────────────
-  const pot = (parseFloat(buyIn) || 0) * participants.length;
-
   const leaderboard = useMemo(() => {
     if (!assignments) return [];
     return participants
@@ -523,7 +517,7 @@ export default function App() {
           Admin Panel
         </h2>
         <p style={{ fontFamily: 'Courier Prime, monospace', fontSize: '.82rem', color: '#888', marginBottom: '1.5rem' }}>
-          {participants.length} {participants.length === 1 ? 'participant' : 'participants'} · Prize pot: {fmt(pot)}
+          {participants.length} {participants.length === 1 ? 'participant' : 'participants'}
         </p>
         {participants.length === 0 ? (
           <p style={{ color: '#888', fontFamily: 'Special Elite, cursive' }}>No participants yet.</p>
@@ -574,10 +568,10 @@ export default function App() {
           <section className="rules-box">
             <h2 className="rules-title">How It Works</h2>
             <ul className="rules-list">
-              <li>Pay <strong>£{buyIn}</strong> to join. You&apos;ll be randomly assigned <strong>2 countries</strong> immediately.</li>
+              <li>Sign up and you&apos;ll be randomly assigned <strong>2 countries</strong> immediately.</li>
               <li>Points are earned as your teams progress through the tournament.</li>
               <li>Points per round: Group Stage=1 · R32=3 · R16=6 · QF=10 · SF=15 · 3rd=20 · Final=25 · Champion=40</li>
-              <li>Prize pot split: 1st=50% · 2nd=25% · 3rd=15% · last place=10%</li>
+              <li>The participant with the most points wins a <strong>digital trophy</strong>. 🏆</li>
               <li>Sign up with your <strong>@autone.io</strong> email — teams are assigned instantly!</li>
             </ul>
           </section>
@@ -737,11 +731,6 @@ export default function App() {
 
         {participantTab === 'leaderboard' && (
           <section className="participant-section">
-            {pot > 0 && (
-              <p style={{ fontFamily: 'Special Elite, cursive', fontSize: '.82rem', color: '#888', marginBottom: '.75rem' }}>
-                Prize pot: {fmt(pot)} · 1st={fmt(pot * 0.5)} · 2nd={fmt(pot * 0.25)} · 3rd={fmt(pot * 0.15)} · last={fmt(pot * 0.1)}
-              </p>
-            )}
             {leaderboard.length === 0 ? (
               <p style={{ color: '#888', fontFamily: 'Special Elite, cursive', padding: '2rem', textAlign: 'center' }}>
                 No participants yet.
