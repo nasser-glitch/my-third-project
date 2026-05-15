@@ -148,10 +148,23 @@ export const PROGRESS_LABELS = [
 // Group stage wins are handled separately (2pts each) and are always additive.
 const KNOCKOUT_PTS = [0, 0, 3, 5, 8, 12, 15, 17, 20];
 
-function getUnderdogMultiplier(fifaRank) {
-  if (!fifaRank || fifaRank <= 10) return 1;
-  if (fifaRank <= 20) return 1.1;
-  if (fifaRank <= 32) return 1.25;
+// WC-relative rank: position among 48 WC teams sorted by FIFA rank (1=best, 48=worst).
+const WC_RANKS = (() => {
+  const sorted = [...TEAMS].sort((a, b) => a.fifaRank - b.fifaRank);
+  const ranks = {};
+  sorted.forEach((t, i) => { ranks[t.id] = i + 1; });
+  return ranks;
+})();
+
+export function getWcRank(teamId) {
+  return WC_RANKS[teamId] ?? null;
+}
+
+function getUnderdogMultiplier(teamId) {
+  const wcRank = WC_RANKS[teamId] ?? 48;
+  if (wcRank <= 10) return 1;
+  if (wcRank <= 20) return 1.1;
+  if (wcRank <= 32) return 1.25;
   return 1.4;
 }
 
@@ -165,8 +178,7 @@ function computeGroupWins(teamId, allMatches) {
 
 export function computeParticipantPoints(tids, allMatches) {
   return tids.reduce((sum, teamId) => {
-    const team = TEAMS.find(t => t.id === teamId);
-    const multiplier = getUnderdogMultiplier(team?.fifaRank);
+    const multiplier = getUnderdogMultiplier(teamId);
     const groupPts   = computeGroupWins(teamId, allMatches) * 2;
     const knockoutPts = KNOCKOUT_PTS[computeTeamProgress(teamId, allMatches)] ?? 0;
     return sum + (groupPts + knockoutPts) * multiplier;
@@ -181,6 +193,9 @@ export function computeTeamProgress(teamId, allMatches) {
     if (hId !== teamId && aId !== teamId) return;
     if (m.stage === 'FINAL' && getWinnerTeamId(m) === teamId) {
       best = Math.max(best, 8);
+    } else if (m.stage === 'THIRD_PLACE') {
+      // winner gets 15pts (index 6); loser gets SF-level 12pts (index 5)
+      best = Math.max(best, getWinnerTeamId(m) === teamId ? 6 : 5);
     } else {
       best = Math.max(best, STAGE_SCORE[m.stage] ?? 0);
     }

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { findTeamId, formatRoundLabel, isLive, stageOrder } from '../utils.js';
+import { findTeamId, formatRoundLabel, isLive, stageOrder, getWcRank } from '../utils.js';
 import { TEAMS } from '../data.js';
 import { todayISO } from '../api.js';
 
@@ -11,6 +11,8 @@ function MatchRow({ match, myTeamIds, participants, assignments }) {
   const awayId = findTeamId(match.awayTeam);
   const homeFlag = homeId ? TEAMS.find(t => t.id === homeId)?.flag : '';
   const awayFlag = awayId ? TEAMS.find(t => t.id === awayId)?.flag : '';
+  const homeWcRank = homeId ? getWcRank(homeId) : null;
+  const awayWcRank = awayId ? getWcRank(awayId) : null;
 
   const homeOwner = homeId && assignments ? findOwner(homeId, assignments, participants) : null;
   const awayOwner = awayId && assignments ? findOwner(awayId, assignments, participants) : null;
@@ -55,6 +57,7 @@ function MatchRow({ match, myTeamIds, participants, assignments }) {
       <div className={`fix-team fix-home ${homeHighlight ? 'fix-my-team' : ''}`}>
         <span className="fix-flag">{homeFlag}</span>
         <span className="fix-name">{match.homeTeam?.shortName || match.homeTeam?.name}</span>
+        {homeWcRank && <span className="fix-wc-rank">#{homeWcRank}</span>}
         {homeOwner && <span className="fix-owner">{homeOwner}</span>}
       </div>
 
@@ -62,6 +65,7 @@ function MatchRow({ match, myTeamIds, participants, assignments }) {
 
       <div className={`fix-team fix-away ${awayHighlight ? 'fix-my-team' : ''}`}>
         {awayOwner && <span className="fix-owner">{awayOwner}</span>}
+        {awayWcRank && <span className="fix-wc-rank">#{awayWcRank}</span>}
         <span className="fix-name">{match.awayTeam?.shortName || match.awayTeam?.name}</span>
         <span className="fix-flag">{awayFlag}</span>
       </div>

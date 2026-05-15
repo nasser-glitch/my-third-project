@@ -1,5 +1,5 @@
 import { TEAMS } from '../data.js';
-import { findTeamId } from '../utils.js';
+import { findTeamId, getWcRank } from '../utils.js';
 
 function ownersOf(teamId, assignments, participants) {
   if (!assignments || !teamId) return [];
@@ -31,6 +31,7 @@ function GroupCard({ grp, assignments, participants }) {
           {(grp.table || []).map(row => {
             const teamId = findTeamId(row.team);
             const internalTeam = TEAMS.find(t => t.id === teamId);
+            const wcRank = teamId ? getWcRank(teamId) : null;
             const owners = ownersOf(teamId, assignments, participants);
             const owned = owners.length > 0;
             return (
@@ -39,6 +40,7 @@ function GroupCard({ grp, assignments, participants }) {
                 <td className="gt-team">
                   <span className="gt-flag">{internalTeam?.flag ?? '🏳'}</span>
                   {internalTeam?.name ?? row.team?.shortName ?? row.team?.name}
+                  {wcRank && <span className="gt-wc-rank">#{wcRank}</span>}
                   {owned && owners.map(owner => (
                     <span key={owner} className="group-owner-badge">{owner}</span>
                   ))}

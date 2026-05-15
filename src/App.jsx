@@ -9,6 +9,7 @@ import TeamPill       from './components/TeamPill.jsx';
 import Ticker         from './components/Ticker.jsx';
 import Fixtures       from './components/Fixtures.jsx';
 import GroupTable     from './components/GroupTable.jsx';
+import HowItWorks    from './components/HowItWorks.jsx';
 import ToastContainer from './components/Toast.jsx';
 
 // ── computeWinner ─────────────────────────────────────────────────
@@ -567,13 +568,8 @@ export default function App() {
         <div className="landing">
           <section className="rules-box">
             <h2 className="rules-title">How It Works</h2>
-            <ul className="rules-list">
-              <li>Sign up and you&apos;ll be randomly assigned <strong>2 countries</strong> immediately.</li>
-              <li>Points: Group stage win=2 · R32=3 · R16=5 · QF=8 · SF=12 · 3rd=15 · Final=17 · Champion=20 (knockout = highest round only)</li>
-              <li>Underdog bonus (FIFA ranking): rank 11–20=×1.1 · rank 21–32=×1.25 · rank 33+=×1.4 — applied to your team&apos;s total</li>
-              <li>The participant with the most points wins a <strong>digital trophy</strong>. 🏆</li>
-              <li>Sign up with your <strong>@autone.io</strong> email — teams are assigned instantly!</li>
-            </ul>
+            <HowItWorks />
+            <p className="hiw-signup-note">Sign up with your <strong>@autone.io</strong> email — teams are assigned instantly!</p>
           </section>
 
           <div className="signup-box">
@@ -689,6 +685,7 @@ export default function App() {
             { id: 'leaderboard', label: 'Leaderboard' },
             { id: 'fixtures',    label: 'Fixtures' },
             { id: 'groups',      label: 'Group Tables' },
+            { id: 'rules',       label: 'How It Works' },
           ].map(t => (
             <button
               key={t.id}
@@ -784,6 +781,15 @@ export default function App() {
             {lastUpdated && (
               <div className="last-updated">Last updated: {lastUpdated.toLocaleTimeString('en-GB')}</div>
             )}
+          </section>
+        )}
+
+        {participantTab === 'rules' && (
+          <section className="participant-section">
+            <div className="rules-box" style={{ maxWidth: 520, margin: '1.5rem auto' }}>
+              <h2 className="rules-title">How It Works</h2>
+              <HowItWorks />
+            </div>
           </section>
         )}
       </div>
