@@ -1,16 +1,14 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { TEAMS, getDemoNames } from './data.js';
-import { shuffle, getTeam, fmt, playThwack, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel } from './utils.js';
+import { TEAMS } from './data.js';
+import { shuffle, getTeam, fmt, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel } from './utils.js';
 import { fetchTodaysMatches, fetchAllMatches, fetchStandings, fetchNextMatch } from './api.js';
-import { sendDrawEmail, sendAdvanceEmail, sendFinalEmail } from './email.js';
+import { sendDrawEmail } from './email.js';
 import supabase, { loadSweepstake, saveSweepstake } from './supabase.js';
 
-import Confetti     from './components/Confetti.jsx';
-import PaniniCard   from './components/PaniniCard.jsx';
-import TeamPill     from './components/TeamPill.jsx';
-import Ticker       from './components/Ticker.jsx';
-import Fixtures     from './components/Fixtures.jsx';
-import GroupTable   from './components/GroupTable.jsx';
+import TeamPill       from './components/TeamPill.jsx';
+import Ticker         from './components/Ticker.jsx';
+import Fixtures       from './components/Fixtures.jsx';
+import GroupTable     from './components/GroupTable.jsx';
 import ToastContainer from './components/Toast.jsx';
 
 // ── computeWinner ─────────────────────────────────────────────────
@@ -62,15 +60,10 @@ function WinnerBanner({ result }) {
   );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
-function stripColor(group) {
-  const hues = { A:0,B:25,C:200,D:120,E:280,F:45,G:160,H:330,I:60,J:190,K:310,L:85 };
-  return `hsl(${hues[group] ?? 0},55%,32%)`;
-}
-
+// ── Constants ─────────────────────────────────────────────────────
 const KNOCKOUT_STAGES = ['LAST_32','LAST_16','QUARTER_FINALS','SEMI_FINALS','THIRD_PLACE','FINAL'];
 
-// ── Auto-elimination computation ─────────────────────────────────
+// ── Auto-elimination computation ──────────────────────────────────
 function computeEliminations(allMatches, standings, assignments, participants, prevStatus) {
   if (!assignments) return { newStatus: prevStatus, toasts: [] };
 
@@ -81,7 +74,6 @@ function computeEliminations(allMatches, standings, assignments, participants, p
     if (newStatus[teamId] === 'eliminated' || newStatus[teamId] === 'champion') return;
     newStatus[teamId] = 'eliminated';
 
-    // Find all participants who own this team
     Object.entries(assignments).forEach(([pIdx, tids]) => {
       if (!tids.includes(teamId)) return;
       const name = participants[parseInt(pIdx, 10)];
@@ -110,12 +102,10 @@ function computeEliminations(allMatches, standings, assignments, participants, p
     });
   }
 
-  // 1. Group stage — eliminate teams in positions 3+ when group is complete
   if (standings?.length) {
     standings.forEach(grp => {
       if (grp.type !== 'TOTAL') return;
       const table = grp.table || [];
-      // Group complete when all teams have played 3 games
       const allPlayed3 = table.length === 4 && table.every(r => r.playedGames >= 3);
       if (allPlayed3) {
         table.slice(2).forEach(row => {
@@ -126,14 +116,12 @@ function computeEliminations(allMatches, standings, assignments, participants, p
     });
   }
 
-  // 2. Knockout rounds — losers of FINISHED matches
   if (allMatches?.length) {
     allMatches.filter(m => m.status === 'FINISHED' && KNOCKOUT_STAGES.includes(m.stage))
       .forEach(m => {
         const loserId = getLoserTeamId(m);
         if (loserId) markEliminated(loserId);
 
-        // Champion = winner of the Final
         if (m.stage === 'FINAL') {
           const winnerId = getWinnerTeamId(m);
           if (winnerId) markChampion(winnerId);
@@ -144,63 +132,84 @@ function computeEliminations(allMatches, standings, assignments, participants, p
   return { newStatus, toasts };
 }
 
+// ── Self-service team assignment ──────────────────────────────────
+function assignTeamsForNewSignup(currentAssignments, currentDupIds) {
+  const allIds    = TEAMS.map(t => t.id);
+  const taken     = new Set(Object.values(currentAssignments).flat());
+  const free      = allIds.filter(id => !taken.has(id));
+  const newDupIds = [...currentDupIds];
+  let t1, t2;
+  if (free.length >= 2) {
+    const s = shuffle(free); [t1, t2] = [s[0], s[1]];
+  } else if (free.length === 1) {
+    t1 = free[0]; t2 = shuffle(allIds)[0];
+    if (!newDupIds.includes(t2)) newDupIds.push(t2);
+  } else {
+    const s = shuffle(allIds); [t1, t2] = [s[0], s[1]];
+    if (!newDupIds.includes(t1)) newDupIds.push(t1);
+    if (!newDupIds.includes(t2)) newDupIds.push(t2);
+  }
+  return { t1, t2, newDupIds };
+}
+
 // ═════════════════════════════════════════════════════════════════
 // APP
 // ═════════════════════════════════════════════════════════════════
 export default function App() {
   // ── Sweepstake state ──────────────────────────────────────────
-  const [loading, setLoading]           = useState(true);
-  const [tab, setTab]                   = useState('setup');
-  const [participants, setParticipants] = useState(getDemoNames(24));
-  const [assignments,  setAssignments]  = useState(null);
-  const [teamStatus,   setTeamStatus]   = useState({});
-  const [buyIn,        setBuyIn]        = useState('5');
-  const [drawing,      setDrawing]      = useState(false);
-  const [revealed,     setRevealed]     = useState(0);
-  const [query,        setQuery]        = useState('');
-  const [confetti,     setConfetti]     = useState(false);
-  const [dupIds,       setDupIds]       = useState([]);
-  const [participantEmails, setParticipantEmails] = useState(Array(24).fill(''));
-  const [copied,       setCopied]       = useState(false);
-  const [winnerResult, setWinnerResult] = useState(null);
+  const [loading,            setLoading]            = useState(true);
+  const [participants,       setParticipants]       = useState([]);
+  const [assignments,        setAssignments]        = useState(null);
+  const [teamStatus,         setTeamStatus]         = useState({});
+  const [buyIn,              setBuyIn]              = useState('5');
+  const [dupIds,             setDupIds]             = useState([]);
+  const [participantEmails,  setParticipantEmails]  = useState([]);
+  const [adminMode,          setAdminMode]          = useState(false);
+  const [adminAuthed,        setAdminAuthed]        = useState(false);
+  const [adminPasswordInput, setAdminPasswordInput] = useState('');
+  const [adminError,         setAdminError]         = useState('');
+  const [myEmail,            setMyEmail]            = useState(() => localStorage.getItem('wc2026_myemail') || '');
+  const [signupMode,         setSignupMode]         = useState('signup');
+  const [signupName,         setSignupName]         = useState('');
+  const [signupEmail,        setSignupEmail]        = useState('');
+  const [signupError,        setSignupError]        = useState('');
+  const [participantTab,     setParticipantTab]     = useState('teams'); // 'teams'|'leaderboard'|'fixtures'|'groups'
 
   // ── API state ─────────────────────────────────────────────────
   const [todaysMatches, setTodaysMatches] = useState([]);
-  const [allMatches, setAllMatches]       = useState([]);
-  const [standings, setStandings]         = useState([]);
-  const [nextMatch, setNextMatch]         = useState(null);
-  const [apiError, setApiError]           = useState(null);
-  const [tickerLoading, setTickerLoading] = useState(false);
-  const [lastUpdated, setLastUpdated]     = useState(null);
-  const [toasts, setToasts]               = useState([]);
+  const [allMatches,    setAllMatches]    = useState([]);
+  const [standings,     setStandings]    = useState([]);
+  const [nextMatch,     setNextMatch]    = useState(null);
+  const [apiError,      setApiError]     = useState(null);
+  const [tickerLoading, setTickerLoading]= useState(false);
+  const [lastUpdated,   setLastUpdated]  = useState(null);
+  const [toasts,        setToasts]       = useState([]);
 
-  // Refs to avoid stale closure issues in polling callbacks
-  const drawRef     = useRef(null);
-  const todayRef    = useRef(todaysMatches);
-  const statusRef   = useRef(teamStatus);
-  const assignRef   = useRef(assignments);
-  const partRef     = useRef(participants);
-  const pollRef     = useRef(null);
+  // ── Refs ──────────────────────────────────────────────────────
+  const todayRef           = useRef(todaysMatches);
+  const statusRef          = useRef(teamStatus);
+  const assignRef          = useRef(assignments);
+  const partRef            = useRef(participants);
+  const pollRef            = useRef(null);
   const emailedMatchIdsRef = useRef(new Set());
   const saveTimerRef       = useRef(null);
 
-  useEffect(() => { todayRef.current   = todaysMatches;  }, [todaysMatches]);
-  useEffect(() => { statusRef.current  = teamStatus;     }, [teamStatus]);
-  useEffect(() => { assignRef.current  = assignments;    }, [assignments]);
-  useEffect(() => { partRef.current    = participants;   }, [participants]);
+  useEffect(() => { todayRef.current  = todaysMatches; }, [todaysMatches]);
+  useEffect(() => { statusRef.current = teamStatus;    }, [teamStatus]);
+  useEffect(() => { assignRef.current = assignments;   }, [assignments]);
+  useEffect(() => { partRef.current   = participants;  }, [participants]);
 
   // ── Load from Supabase on first open ─────────────────────────
   useEffect(() => {
     loadSweepstake().then(data => {
       if (data) {
-        const names = data.participants ?? getDemoNames(24);
+        const names = data.participants ?? [];
         setParticipants(names);
         setAssignments(data.assignments ?? null);
         setTeamStatus(data.team_status ?? {});
         setBuyIn(data.buy_in ?? '5');
         setDupIds(data.dup_ids ?? []);
         setParticipantEmails(data.participant_emails ?? Array(names.length).fill(''));
-        if (data.assignments) setRevealed(Object.keys(data.assignments).length);
         emailedMatchIdsRef.current = new Set(data.emailed_match_ids ?? []);
       }
       setLoading(false);
@@ -223,7 +232,7 @@ export default function App() {
     }, 1000);
   }, [participants, assignments, teamStatus, buyIn, dupIds, participantEmails, loading]);
 
-  // ── Real-time sync: update all open tabs when DB changes ──────
+  // ── Real-time sync across all open tabs ──────────────────────
   useEffect(() => {
     const channel = supabase
       .channel('sweepstake-live')
@@ -280,13 +289,11 @@ export default function App() {
       hasError = true;
     }
 
-    // Fetch "next match" if no matches today
     const todayMatches = todayRes.status === 'fulfilled' ? (todayRes.value.data?.matches || []) : [];
     if (todayMatches.length === 0) {
       try {
         const nextRes = await fetchNextMatch();
-        const nm = nextRes.data?.matches?.[0] || null;
-        setNextMatch(nm);
+        setNextMatch(nextRes.data?.matches?.[0] || null);
       } catch {}
     } else {
       setNextMatch(null);
@@ -308,7 +315,6 @@ export default function App() {
     }, interval);
   }, [doRefresh]);
 
-  // Initial load + start polling
   useEffect(() => {
     doRefresh(false).then(schedulePoll);
     return () => clearTimeout(pollRef.current);
@@ -327,161 +333,106 @@ export default function App() {
     }
   }, [allMatches, standings]);
 
-  // ── Advancement email notifications ───────────────────────────
-  useEffect(() => {
-    if (!assignments) return;
-    const KNOCKOUT = ['LAST_32','LAST_16','QUARTER_FINALS','SEMI_FINALS','FINAL'];
-    allMatches
-      .filter(m => m.status === 'FINISHED' && KNOCKOUT.includes(m.stage))
-      .forEach(m => {
-        if (emailedMatchIdsRef.current.has(m.id)) return;
-        emailedMatchIdsRef.current.add(m.id);
-        saveSweepstake({ emailed_match_ids: [...emailedMatchIdsRef.current] });
-        const winnerId = getWinnerTeamId(m);
-        if (!winnerId) return;
-        const stageLabel = formatRoundLabel(m.stage, null);
-        Object.entries(assignments).forEach(([idx, tids]) => {
-          if (!tids.includes(winnerId)) return;
-          const email = participantEmails[+idx];
-          const name  = participants[+idx];
-          const team  = getTeam(winnerId);
-          if (email?.endsWith('@autone.io') && team) {
-            sendAdvanceEmail(email, name, `${team.flag} ${team.name}`, stageLabel);
-          }
-        });
-      });
-  }, [allMatches, assignments, participants, participantEmails]);
-
-  // ── Winner computation ────────────────────────────────────────
-  useEffect(() => {
-    if (!assignments) { setWinnerResult(null); return; }
-    setWinnerResult(computeWinner(assignments, participants, allMatches));
-  }, [allMatches, assignments, participants, teamStatus]);
 
   const dismissToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
-  // ── Draw ──────────────────────────────────────────────────────
-  const doDraw = useCallback(() => {
-    if (drawing) return;
-    const n = participants.filter(Boolean).length;
-    if (n < 2) return;
-    const totalSlots = n * 2; // always 2 teams per person
-    const shuffledIds = shuffle(TEAMS.map(t => t.id));
+  useEffect(() => () => clearTimeout(pollRef.current), []);
 
-    let pool, newDupIds = [];
-    if (totalSlots <= TEAMS.length) {
-      // ≤24 participants: use only 2N teams, rest sit out (no duplicates)
-      pool = shuffledIds.slice(0, totalSlots);
-    } else {
-      // >24 participants: duplicate (2N−48) teams so everyone still gets 2
-      const extraNeeded = totalSlots - TEAMS.length;
-      const dupes = shuffle([...shuffledIds]).slice(0, extraNeeded);
-      newDupIds = dupes;
-      pool = shuffle([...shuffledIds, ...dupes]);
+  // ── Sign-up ───────────────────────────────────────────────────
+  const handleSignup = useCallback(() => {
+    const name  = signupName.trim();
+    const email = signupEmail.trim().toLowerCase();
+    if (!name)                         { setSignupError('Please enter your name.'); return; }
+    if (!email.endsWith('@autone.io')) { setSignupError('Please use your @autone.io email.'); return; }
+    if (participantEmails.includes(email)) {
+      localStorage.setItem('wc2026_myemail', email);
+      setMyEmail(email);
+      setSignupError('');
+      return;
     }
-
-    // Assign 2 teams per participant
-    const ass = {};
-    participants.forEach((_, i) => {
-      ass[i] = [pool[i * 2], pool[i * 2 + 1]];
-    });
-
+    const newIdx = participants.length;
+    const { t1, t2, newDupIds } = assignTeamsForNewSignup(assignments || {}, dupIds);
+    const newParticipants = [...participants, name];
+    const newEmails       = [...participantEmails, email];
+    const newAssignments  = { ...(assignments || {}), [newIdx]: [t1, t2] };
+    setParticipants(newParticipants);
+    setParticipantEmails(newEmails);
+    setAssignments(newAssignments);
     setDupIds(newDupIds);
-    setAssignments(ass);
-    setTeamStatus({});
-    setRevealed(0);
-    setDrawing(true);
-    setTab('draw');
+    localStorage.setItem('wc2026_myemail', email);
+    setMyEmail(email);
+    setSignupError('');
+    const t1obj = getTeam(t1);
+    const t2obj = getTeam(t2);
+    sendDrawEmail(
+      email, name,
+      t1obj ? `${t1obj.flag} ${t1obj.name}` : '?',
+      t2obj ? `${t2obj.flag} ${t2obj.name}` : '?'
+    );
+  }, [signupName, signupEmail, participants, participantEmails, assignments, dupIds]);
 
-    let c = 0;
-    drawRef.current = setInterval(() => {
-      c++;
-      setRevealed(c);
-      playThwack(c);
-      if (c >= n) {
-        clearInterval(drawRef.current);
-        setDrawing(false);
-        setConfetti(true);
-        setTimeout(() => setConfetti(false), 8000);
-        participants.forEach((name, pi) => {
-          const email = participantEmails[pi];
-          if (!email || !email.endsWith('@autone.io')) return;
-          const [t1, t2] = ass[pi] || [];
-          const t1obj = getTeam(t1);
-          const t2obj = getTeam(t2);
-          sendDrawEmail(
-            email, name,
-            t1obj ? `${t1obj.flag} ${t1obj.name}` : '?',
-            t2obj ? `${t2obj.flag} ${t2obj.name}` : '?'
-          );
-        });
-      }
-    }, 160);
-  }, [drawing, participants, participantEmails]);
+  // ── Sign-in ───────────────────────────────────────────────────
+  const handleSignIn = useCallback(() => {
+    const email = signupEmail.trim().toLowerCase();
+    if (!email.endsWith('@autone.io')) { setSignupError('Please use your @autone.io email.'); return; }
+    if (!participantEmails.includes(email)) { setSignupError('No account found. Try signing up instead.'); return; }
+    localStorage.setItem('wc2026_myemail', email);
+    setMyEmail(email);
+    setSignupError('');
+  }, [signupEmail, participantEmails]);
 
-  const doReset = useCallback(() => {
-    clearInterval(drawRef.current);
-    setAssignments(null);
-    setTeamStatus({});
-    setRevealed(0);
-    setDrawing(false);
-    setDupIds([]);
-    setConfetti(false);
+  // ── Sign-out ──────────────────────────────────────────────────
+  const handleSignOut = useCallback(() => {
+    localStorage.removeItem('wc2026_myemail');
+    setMyEmail('');
+    setSignupName('');
+    setSignupEmail('');
+    setSignupError('');
   }, []);
 
-  useEffect(() => () => { clearInterval(drawRef.current); clearTimeout(pollRef.current); }, []);
+  // ── Admin login ───────────────────────────────────────────────
+  const handleAdminLogin = useCallback(() => {
+    const correct = import.meta.env.VITE_ADMIN_PASSWORD;
+    if (!correct) { setAdminError('Admin password not configured in .env.local'); return; }
+    if (adminPasswordInput === correct) {
+      setAdminAuthed(true);
+      setAdminError('');
+    } else {
+      setAdminError('Incorrect password.');
+    }
+  }, [adminPasswordInput]);
 
-  // ── Status cycle (manual) ────────────────────────────────────
-  const cycleStatus = useCallback((tid) => {
-    setTeamStatus(prev => {
-      const cur = prev[tid] || 'active';
-      const nxt = cur === 'active' ? 'eliminated' : cur === 'eliminated' ? 'champion' : 'active';
-      return { ...prev, [tid]: nxt };
+  // ── Remove participant (frees their teams back to pool) ───────
+  const handleRemove = useCallback((idx) => {
+    if (!window.confirm(`Remove ${participants[idx]}? Their teams will be freed back to the pool.`)) return;
+    const newParticipants = participants.filter((_, i) => i !== idx);
+    const newEmails       = participantEmails.filter((_, i) => i !== idx);
+    const newAssignments  = {};
+    Object.entries(assignments || {}).forEach(([k, v]) => {
+      const oldIdx = parseInt(k);
+      if (oldIdx === idx) return;
+      const newIdx = oldIdx > idx ? oldIdx - 1 : oldIdx;
+      newAssignments[newIdx] = v;
     });
-  }, []);
+    const remaining = Object.values(newAssignments).flat();
+    const counts = {};
+    remaining.forEach(t => { counts[t] = (counts[t] || 0) + 1; });
+    const newDupIds = dupIds.filter(id => (counts[id] || 0) >= 2);
+    setParticipants(newParticipants);
+    setParticipantEmails(newEmails);
+    setAssignments(Object.keys(newAssignments).length ? newAssignments : null);
+    setDupIds(newDupIds);
+    if (participantEmails[idx] === myEmail) {
+      localStorage.removeItem('wc2026_myemail');
+      setMyEmail('');
+    }
+  }, [participants, participantEmails, assignments, dupIds, myEmail]);
 
-  // ── Prizes ────────────────────────────────────────────────────
+  // ── Derived values ────────────────────────────────────────────
   const pot = (parseFloat(buyIn) || 0) * participants.length;
-  const prizes = [
-    { label: '🥇 Winner',      pct: '50%', amt: pot * 0.50 },
-    { label: '🥈 Runner-up',   pct: '25%', amt: pot * 0.25 },
-    { label: '🥉 Third',       pct: '15%', amt: pot * 0.15 },
-    { label: '🪵 Wooden Spoon',pct: '10%', amt: pot * 0.10 },
-  ];
 
-  // ── Export ────────────────────────────────────────────────────
-  const doExport = useCallback(() => {
-    if (!assignments) return;
-    let txt = `WORLD CUP 2026 SWEEPSTAKE\n`;
-    txt += `${new Date().toLocaleDateString('en-GB')}  |  Buy-in: ${fmt(parseFloat(buyIn) || 0)}  |  Pot: ${fmt(pot)}\n`;
-    txt += '─'.repeat(52) + '\n';
-    participants.forEach((n, i) => {
-      const tids = assignments[i] || [];
-      const teams = tids.map(tid => {
-        const t = getTeam(tid);
-        const s = teamStatus[tid] || 'active';
-        return `${t.flag} ${t.name}${s === 'champion' ? ' 🏆' : s === 'eliminated' ? ' (OUT)' : ''}`;
-      }).join(' & ');
-      txt += `${String(i + 1).padStart(2, '0')}. ${n.padEnd(22)} ${teams}\n`;
-    });
-    txt += '─'.repeat(52) + '\n';
-    prizes.forEach(p => { txt += `  ${p.label} (${p.pct}): ${fmt(p.amt)}\n`; });
-    navigator.clipboard.writeText(txt)
-      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })
-      .catch(() => alert(txt));
-  }, [assignments, participants, teamStatus, buyIn, pot, prizes]);
-
-  // ── Filtered participants for draw tab ───────────────────────
-  const filtered = useMemo(() =>
-    participants
-      .map((n, i) => ({ n, i }))
-      .filter(({ n }) => n.toLowerCase().includes(query.toLowerCase())),
-    [participants, query]
-  );
-
-  // ── Points leaderboard ───────────────────────────────────────
   const leaderboard = useMemo(() => {
     if (!assignments) return [];
     return participants
@@ -493,23 +444,25 @@ export default function App() {
       .sort((a, b) => b.pts - a.pts);
   }, [assignments, participants, allMatches]);
 
-  // ── Sorted leaderboard (champion → active → eliminated) ──────
-  const sortedParticipants = useMemo(() => {
-    if (!assignments) return [];
-    const order = { champion: 0, active: 1, eliminated: 2 };
-    return participants.map((n, i) => {
-      const tids = assignments[i] || [];
-      const best = tids.reduce((b, tid) => {
-        const s = teamStatus[tid] || 'active';
-        return order[s] < order[b] ? s : b;
-      }, 'eliminated');
-      return { n, i, tids, best };
-    }).sort((a, b) => order[a.best] - order[b.best]);
-  }, [assignments, participants, teamStatus]);
+  const winnerResult = useMemo(() =>
+    computeWinner(assignments, participants, allMatches),
+    [assignments, participants, allMatches]);
 
-  // ═══════════════════════════════════════════════════════════════
+  const myIndex = useMemo(() =>
+    myEmail ? participantEmails.findIndex(e => e === myEmail) : -1,
+    [myEmail, participantEmails]);
+
+  const myTeams = useMemo(() =>
+    myIndex >= 0 && assignments ? assignments[myIndex] ?? null : null,
+    [myIndex, assignments]);
+
+  const myPoints = useMemo(() =>
+    computeParticipantPoints(myTeams || [], allMatches),
+    [myTeams, allMatches]);
+
+  // ═════════════════════════════════════════════════════════════
   // RENDER
-  // ═══════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'Special Elite, cursive', fontSize: '1.2rem', color: '#2D5A1B' }}>
@@ -518,411 +471,340 @@ export default function App() {
     );
   }
 
+  // ── Admin password prompt ─────────────────────────────────────
+  if (adminMode && !adminAuthed) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <div className="admin-login">
+          <h2 style={{ fontFamily: 'Special Elite, cursive', marginBottom: '1rem' }}>Admin Login</h2>
+          <input
+            className="inp"
+            type="password"
+            placeholder="Password"
+            value={adminPasswordInput}
+            onChange={e => setAdminPasswordInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleAdminLogin()}
+            style={{ marginBottom: '.7rem' }}
+          />
+          {adminError && <p className="signup-error" style={{ marginBottom: '.7rem' }}>{adminError}</p>}
+          <button
+            className="draw-btn"
+            style={{ fontSize: '1rem', padding: '.5rem 1.5rem', display: 'block', width: '100%' }}
+            onClick={handleAdminLogin}
+          >
+            Enter
+          </button>
+          <div style={{ marginTop: '1rem', textAlign: 'center' }}>
+            <button
+              className="admin-link"
+              onClick={() => { setAdminMode(false); setAdminPasswordInput(''); setAdminError(''); }}
+            >
+              ← Back
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Admin panel ───────────────────────────────────────────────
+  if (adminMode && adminAuthed) {
+    return (
+      <div className="admin-panel">
+        <div style={{ marginBottom: '1rem' }}>
+          <button
+            className="admin-link"
+            onClick={() => { setAdminMode(false); setAdminAuthed(false); setAdminPasswordInput(''); }}
+          >
+            ← Back to Sweepstake
+          </button>
+        </div>
+        <h2 style={{ fontFamily: 'Special Elite, cursive', fontSize: '1.4rem', marginBottom: '.25rem' }}>
+          Admin Panel
+        </h2>
+        <p style={{ fontFamily: 'Courier Prime, monospace', fontSize: '.82rem', color: '#888', marginBottom: '1.5rem' }}>
+          {participants.length} {participants.length === 1 ? 'participant' : 'participants'} · Prize pot: {fmt(pot)}
+        </p>
+        {participants.length === 0 ? (
+          <p style={{ color: '#888', fontFamily: 'Special Elite, cursive' }}>No participants yet.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="tbl">
+              <thead>
+                <tr><th>#</th><th>Name</th><th>Email</th><th>Teams</th><th></th></tr>
+              </thead>
+              <tbody>
+                {participants.map((name, i) => {
+                  const tids = assignments?.[i] || [];
+                  return (
+                    <tr key={i}>
+                      <td style={{ fontFamily: 'Oswald, sans-serif', fontWeight: 700, color: 'var(--green)', width: '2rem' }}>{i + 1}</td>
+                      <td style={{ fontFamily: 'Special Elite, cursive', whiteSpace: 'nowrap' }}>{name}</td>
+                      <td style={{ fontSize: '.8rem', color: '#666' }}>{participantEmails[i] || '—'}</td>
+                      <td>{tids.map(tid => { const t = getTeam(tid); return t ? `${t.flag} ${t.name}` : tid; }).join(' · ')}</td>
+                      <td><button className="btn-remove" onClick={() => handleRemove(i)}>Remove</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Landing page (not signed in) ──────────────────────────────
+  if (myIndex === -1) {
+    return (
+      <div>
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+        <Ticker todaysMatches={todaysMatches} nextMatch={nextMatch} loading={tickerLoading} apiError={apiError} />
+        {apiError && <div className="api-banner">⚠ {apiError}</div>}
+
+        <div className="hdr">
+          <div className="hdr-title">⚽ World Cup 2026 ⚽</div>
+          <div className="hdr-title" style={{ fontSize: 'clamp(1.2rem,3.5vw,2.2rem)', marginTop: '.1rem' }}>
+            Company Sweepstake
+          </div>
+          <div className="hdr-sub">USA · Canada · Mexico — June–July 2026</div>
+        </div>
+
+        <div className="landing">
+          <section className="rules-box">
+            <h2 className="rules-title">How It Works</h2>
+            <ul className="rules-list">
+              <li>Pay <strong>£{buyIn}</strong> to join. You&apos;ll be randomly assigned <strong>2 countries</strong> immediately.</li>
+              <li>Points are earned as your teams progress through the tournament.</li>
+              <li>Points per round: Group Stage=1 · R32=3 · R16=6 · QF=10 · SF=15 · 3rd=20 · Final=25 · Champion=40</li>
+              <li>Prize pot split: 1st=50% · 2nd=25% · 3rd=15% · last place=10%</li>
+              <li>Sign up with your <strong>@autone.io</strong> email — teams are assigned instantly!</li>
+            </ul>
+          </section>
+
+          <div className="signup-box">
+            <div className="mode-toggle">
+              <button
+                className={`mode-btn${signupMode === 'signup' ? ' mode-btn--active' : ''}`}
+                onClick={() => { setSignupMode('signup'); setSignupError(''); setSignupEmail(''); }}
+              >
+                Sign Up
+              </button>
+              <button
+                className={`mode-btn${signupMode === 'signin' ? ' mode-btn--active' : ''}`}
+                onClick={() => { setSignupMode('signin'); setSignupError(''); setSignupName(''); }}
+              >
+                Sign In
+              </button>
+            </div>
+
+            {signupMode === 'signup' ? (
+              <>
+                <input
+                  className="inp signup-inp"
+                  placeholder="Your full name"
+                  value={signupName}
+                  onChange={e => setSignupName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSignup()}
+                />
+                <input
+                  className="inp signup-inp"
+                  type="email"
+                  placeholder="you@autone.io"
+                  value={signupEmail}
+                  onChange={e => setSignupEmail(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSignup()}
+                />
+                {signupError && <p className="signup-error">{signupError}</p>}
+                <button
+                  className="draw-btn"
+                  style={{ fontSize: '1.1rem', padding: '.6rem 2rem' }}
+                  onClick={handleSignup}
+                >
+                  Join Sweepstake
+                </button>
+                <p className="signup-spots">
+                  {participants.length} {participants.length === 1 ? 'person' : 'people'} joined
+                  {' · '}
+                  {Math.max(0, 48 - Object.values(assignments || {}).flat().length)} team slots remaining
+                </p>
+              </>
+            ) : (
+              <>
+                <input
+                  className="inp signup-inp"
+                  type="email"
+                  placeholder="you@autone.io"
+                  value={signupEmail}
+                  onChange={e => setSignupEmail(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSignIn()}
+                />
+                {signupError && <p className="signup-error">{signupError}</p>}
+                <button
+                  className="draw-btn"
+                  style={{ fontSize: '1.1rem', padding: '.6rem 2rem' }}
+                  onClick={handleSignIn}
+                >
+                  Sign In
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="footer">
+          ⚽ &nbsp; FIFA World Cup 2026 &nbsp;·&nbsp; USA, Canada &amp; Mexico &nbsp;·&nbsp; June–July 2026 &nbsp; ⚽
+          <br />
+          <button className="admin-link" style={{ marginTop: '.5rem' }} onClick={() => setAdminMode(true)}>
+            Admin
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Logged-in participant view ─────────────────────────────────
   return (
     <div>
-      <Confetti active={confetti} />
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <Ticker todaysMatches={todaysMatches} nextMatch={nextMatch} loading={tickerLoading} apiError={apiError} />
+      {apiError && <div className="api-banner">⚠ {apiError}</div>}
 
-      {/* TICKER */}
-      <Ticker
-        todaysMatches={todaysMatches}
-        nextMatch={nextMatch}
-        loading={tickerLoading}
-        apiError={apiError}
-      />
-
-      {/* API error banner */}
-      {apiError && (
-        <div className="api-banner">
-          ⚠ {apiError}
-        </div>
-      )}
-
-      {/* HEADER */}
       <div className="hdr">
         <div className="hdr-title">⚽ World Cup 2026 ⚽</div>
         <div className="hdr-title" style={{ fontSize: 'clamp(1.2rem,3.5vw,2.2rem)', marginTop: '.1rem' }}>
           Company Sweepstake
         </div>
         <div className="hdr-sub">USA · Canada · Mexico — June–July 2026</div>
-      </div>
-
-      {/* TABS */}
-      <div className="tabs">
-        {[
-          { id: 'setup',    label: '👥 Setup' },
-          { id: 'draw',     label: '🎲 Draw' },
-          { id: 'fixtures', label: '📅 Fixtures' },
-          { id: 'groups',   label: '🏟 Groups' },
-          { id: 'prizes',   label: '💰 Prizes' },
-        ].map(t => (
-          <button
-            key={t.id}
-            className={`tab ${tab === t.id ? 'active' : ''}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
+        <div style={{ position: 'relative', zIndex: 1, marginTop: '.6rem' }}>
+          <span style={{ fontFamily: 'Special Elite, cursive', color: 'var(--parchment)', fontSize: '.92rem' }}>
+            Welcome, {participants[myIndex]}!
+          </span>
+          <button className="btn-signout" onClick={handleSignOut} style={{ marginLeft: '1rem' }}>
+            Sign Out
           </button>
-        ))}
+        </div>
       </div>
 
       <div className="content">
+        {winnerResult && <WinnerBanner result={winnerResult} />}
 
-        {/* ══════════════ SETUP ══════════════ */}
-        {tab === 'setup' && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '.5rem', marginBottom: '1rem' }}>
-              <h2 className="sec-hdr" style={{ margin: 0, border: 'none' }}>Participants</h2>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', flexWrap: 'wrap' }}>
-                <button className="count-btn" onClick={() => { setParticipants(p => p.length > 2 ? p.slice(0, -1) : p); setParticipantEmails(p => p.length > 2 ? p.slice(0, -1) : p); }}>−</button>
-                <span className="count-display">{participants.length}</span>
-                <button className="count-btn" onClick={() => { setParticipants(p => [...p, '']); setParticipantEmails(p => [...p, '']); }}>+</button>
-                <button className="btn-outline" onClick={() => setParticipants(getDemoNames(participants.length))}>
-                  Load Demo Names
-                </button>
-              </div>
-            </div>
-            <div style={{ fontFamily: 'Special Elite,cursive', fontSize: '.82rem', color: '#888', marginBottom: '.75rem' }}>
-              Each person gets <strong>2 teams</strong> · {participants.length <= 24
-                ? `${48 - participants.length * 2} teams will sit out`
-                : `${participants.length * 2 - 48} team${participants.length * 2 - 48 > 1 ? 's' : ''} shared between 2 people`}
-            </div>
+        <div className="participant-tabs">
+          {[
+            { id: 'teams',       label: 'My Teams' },
+            { id: 'leaderboard', label: 'Leaderboard' },
+            { id: 'fixtures',    label: 'Fixtures' },
+            { id: 'groups',      label: 'Group Tables' },
+          ].map(t => (
+            <button
+              key={t.id}
+              className={`participant-tab${participantTab === t.id ? ' participant-tab--active' : ''}`}
+              onClick={() => setParticipantTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
 
-            <div className="rbox" data-label="PARTICIPANT LIST" style={{ marginBottom: '1.25rem' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: '.2rem' }}>
-                {participants.map((n, i) => (
-                  <div key={i} className="p-row">
-                    <span className="p-num">{i + 1}.</span>
-                    <input
-                      className="inp"
-                      value={n}
-                      onChange={e => {
-                        const next = [...participants];
-                        next[i] = e.target.value;
-                        setParticipants(next);
-                      }}
-                      placeholder={`Participant ${i + 1}`}
-                      style={{ fontSize: '.85rem', padding: '.28rem .5rem' }}
-                    />
-                    <input
-                      className="inp inp-email"
-                      type="email"
-                      value={participantEmails[i] || ''}
-                      onChange={e => {
-                        const next = [...participantEmails];
-                        next[i] = e.target.value;
-                        setParticipantEmails(next);
-                      }}
-                      placeholder="name@autone.io"
-                    />
-                    <button
-                      className="remove-btn"
-                      onClick={() => {
-                        setParticipants(p => p.filter((_, idx) => idx !== i));
-                        setParticipantEmails(p => p.filter((_, idx) => idx !== i));
-                      }}
-                      disabled={participants.length <= 2}
-                    >×</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-              <button className="draw-btn" onClick={doDraw} disabled={drawing}>
-                {drawing ? '⏳ Drawing…' : '🎲 Start The Draw!'}
-              </button>
-            </div>
-
-            <h2 className="sec-hdr">All 48 Teams</h2>
-            <div className="grid">
-              {TEAMS.map(t => (
-                <div key={t.id} className="card">
-                  <div className="card-strip" style={{ background: stripColor(t.group) }}>
-                    <span style={{ fontFamily: 'Oswald,sans-serif', fontSize: '.6rem', fontWeight: 700, color: '#fff', letterSpacing: '.1em' }}>
-                      GRP {t.group}
-                    </span>
-                  </div>
-                  <div className="card-flag">{t.flag}</div>
-                  <div className="card-name">{t.name}</div>
+        {participantTab === 'teams' && (
+          <div className="my-teams-box">
+            <div className="my-teams-title">Your Teams</div>
+            {myTeams ? (
+              <>
+                <div className="my-teams-row">
+                  {myTeams.map(tid => {
+                    const t   = getTeam(tid);
+                    const s   = teamStatus[tid] || 'active';
+                    const pts = computeParticipantPoints([tid], allMatches);
+                    return (
+                      <div key={tid} className={`my-team-card my-team-card--${s}`}>
+                        <div className="my-team-flag">{t?.flag}</div>
+                        <div className="my-team-name">{t?.name}</div>
+                        <div className="my-team-pts">{pts} pts</div>
+                        {s === 'eliminated' && <div className="my-team-status">OUT</div>}
+                        {s === 'champion'   && <div className="my-team-status">🏆 CHAMPION</div>}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ══════════════ DRAW ══════════════ */}
-        {tab === 'draw' && (
-          <div>
-            {!assignments ? (
-              <div style={{ textAlign: 'center', padding: '5rem 1rem' }}>
-                <p style={{ fontFamily: 'Special Elite,cursive', fontSize: '1.15rem', marginBottom: '2rem', color: 'var(--ink)', lineHeight: 1.7 }}>
-                  All {participants.length} participants are ready.<br />Click the button to begin the draw!
-                </p>
-                <button className="draw-btn" onClick={doDraw} disabled={drawing}>
-                  🎲 DRAW!
-                </button>
-              </div>
+                <p className="my-points">Total: <strong>{myPoints} pts</strong></p>
+              </>
             ) : (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '.65rem', marginBottom: '1rem' }}>
-                  <h2 className="sec-hdr" style={{ margin: 0, border: 'none' }}>Draw Results</h2>
-                  {!drawing && (
-                    <div style={{ display: 'flex', gap: '.6rem', flexWrap: 'wrap' }}>
-                      <button className="btn-green" onClick={doExport}>
-                        {copied ? '✓ Copied!' : '📋 Copy Results'}
-                      </button>
-                      <button className="btn-outline" onClick={doReset}>↺ Reset Draw</button>
-                    </div>
-                  )}
-                </div>
-
-                {drawing && (
-                  <div style={{ marginBottom: '1.25rem' }}>
-                    <div className="announce" style={{ marginBottom: '.4rem' }}>
-                      Drawing… {revealed} / {participants.length}
-                    </div>
-                    <div className="prog">
-                      <div className="prog-bar" style={{ width: `${(revealed / participants.length) * 100}%` }} />
-                    </div>
-                  </div>
-                )}
-
-                {!drawing && revealed >= participants.length && (
-                  <div style={{ textAlign: 'center', marginBottom: '1.25rem', padding: '.75rem', background: 'var(--green)', borderRadius: '5px', border: '3px solid var(--ink)' }}>
-                    <span className="announce">🎉 Draw Complete! Good luck everyone! 🎉</span>
-                  </div>
-                )}
-
-                {dupIds.length > 0 && (
-                  <div style={{ marginBottom: '.9rem', padding: '.45rem .9rem', background: 'rgba(200,151,28,.15)', border: '2px solid var(--gold)', borderRadius: '4px', fontSize: '.83rem', fontFamily: 'Courier Prime,monospace' }}>
-                    <strong>⚠ {dupIds.length} team{dupIds.length > 1 ? 's' : ''} shared</strong> (2 participants each):&nbsp;
-                    {dupIds.map(id => { const t = getTeam(id); return `${t.flag} ${t.name}`; }).join(', ')}
-                  </div>
-                )}
-
-                {/* Winner banner */}
-                {winnerResult && <WinnerBanner result={winnerResult} />}
-
-                {/* Search */}
-                <div style={{ position: 'relative', maxWidth: '300px', marginBottom: '1rem' }}>
-                  <span style={{ position: 'absolute', left: '.65rem', top: '50%', transform: 'translateY(-50%)', fontSize: '.85rem', pointerEvents: 'none' }}>🔍</span>
-                  <input className="inp" style={{ paddingLeft: '2.1rem' }} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search participant…" />
-                </div>
-
-                {/* Table — uses sortedParticipants once draw is done */}
-                <div style={{ overflowX: 'auto', marginBottom: '1.75rem' }}>
-                  <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Participant</th>
-                        <th>Team(s)</th>
-                        <th>Status</th>
-                        <th>Update</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(query ? filtered : sortedParticipants.map(r => ({ n: r.n, i: r.i }))).map(({ n, i }) => {
-                        if (i >= revealed) return null;
-                        const tids = assignments[i] || [];
-                        return (
-                          <tr key={i} className={
-                            tids.every(tid => (teamStatus[tid] || 'active') === 'eliminated') ? 'row-elim' :
-                            tids.some(tid => teamStatus[tid] === 'champion') ? 'row-champ' : ''
-                          }>
-                            <td style={{ fontFamily: 'Oswald,sans-serif', fontWeight: 700, color: 'var(--green)', fontSize: '.88rem', width: '2.5rem' }}>{i + 1}</td>
-                            <td style={{ fontFamily: 'Special Elite,cursive', fontSize: '.95rem', whiteSpace: 'nowrap' }}>{n}</td>
-                            <td>{tids.map(tid => <TeamPill key={tid} tid={tid} status={teamStatus[tid] || 'active'} />)}</td>
-                            <td>
-                              {tids.map(tid => {
-                                const s = teamStatus[tid] || 'active';
-                                return (
-                                  <span key={tid} className={`badge ${s === 'active' ? 'b-active' : s === 'eliminated' ? 'b-elim' : 'b-champ'}`} style={{ marginRight: 3 }}>
-                                    {s === 'active' ? 'Active' : s === 'eliminated' ? 'Out' : 'Champion'}
-                                  </span>
-                                );
-                              })}
-                            </td>
-                            <td>
-                              {tids.map(tid => {
-                                const t = getTeam(tid);
-                                const s = teamStatus[tid] || 'active';
-                                const lbl = s === 'active' ? '→ Elim' : s === 'eliminated' ? '→ Champ' : '→ Active';
-                                return (
-                                  <button key={tid} className="cycle-btn" onClick={() => cycleStatus(tid)} title="Click to cycle status">
-                                    {t.flag} {lbl}
-                                  </button>
-                                );
-                              })}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {lastUpdated && (
-                  <div className="last-updated">Last updated: {lastUpdated.toLocaleTimeString('en-GB')}</div>
-                )}
-
-                {/* Sticker grid */}
-                {revealed > 0 && (
-                  <>
-                    <h3 className="sec-hdr">Sticker Album</h3>
-                    <div className="grid">
-                      {participants.map((n, i) => {
-                        if (i >= revealed) return null;
-                        return (assignments[i] || []).map(tid => (
-                          <PaniniCard
-                            key={`${i}-${tid}`}
-                            tid={tid}
-                            status={teamStatus[tid] || 'active'}
-                            owner={n}
-                            idx={i}
-                            animated
-                            onCycleStatus={cycleStatus}
-                          />
-                        ));
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
+              <p style={{ color: '#888', fontFamily: 'Special Elite, cursive' }}>No teams assigned yet.</p>
             )}
           </div>
         )}
 
-        {/* ══════════════ FIXTURES ══════════════ */}
-        {tab === 'fixtures' && (
-          <div>
-            <h2 className="sec-hdr">Tournament Fixtures</h2>
+        {participantTab === 'leaderboard' && (
+          <section className="participant-section">
+            {pot > 0 && (
+              <p style={{ fontFamily: 'Special Elite, cursive', fontSize: '.82rem', color: '#888', marginBottom: '.75rem' }}>
+                Prize pot: {fmt(pot)} · 1st={fmt(pot * 0.5)} · 2nd={fmt(pot * 0.25)} · 3rd={fmt(pot * 0.15)} · last={fmt(pot * 0.1)}
+              </p>
+            )}
+            {leaderboard.length === 0 ? (
+              <p style={{ color: '#888', fontFamily: 'Special Elite, cursive', padding: '2rem', textAlign: 'center' }}>
+                No participants yet.
+              </p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="tbl">
+                  <thead>
+                    <tr><th>#</th><th>Name</th><th>Teams</th><th>Points</th></tr>
+                  </thead>
+                  <tbody>
+                    {leaderboard.map(({ name, i, tids, pts }, rank) => (
+                      <tr key={i} className={
+                        i === myIndex ? 'my-row'    :
+                        rank === 0    ? 'lb-rank-1' :
+                        rank === 1    ? 'lb-rank-2' :
+                        rank === 2    ? 'lb-rank-3' : ''
+                      }>
+                        <td style={{ fontFamily: 'Oswald,sans-serif', fontWeight: 700, color: 'var(--green)', fontSize: '.88rem', width: '2.5rem' }}>
+                          {rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank + 1}
+                        </td>
+                        <td style={{ fontFamily: 'Special Elite,cursive', fontSize: '.95rem', whiteSpace: 'nowrap' }}>
+                          {name}{i === myIndex ? ' 👈' : ''}
+                        </td>
+                        <td>{tids.map(tid => <TeamPill key={tid} tid={tid} status={teamStatus[tid] || 'active'} />)}</td>
+                        <td className="pts-cell">{pts}<span className="pts-label">pts</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {participantTab === 'fixtures' && (
+          <section className="participant-section">
             <Fixtures
               allMatches={allMatches}
               assignments={assignments}
               participants={participants}
               lastUpdated={lastUpdated}
+              myTeamIds={new Set(myTeams || [])}
             />
-          </div>
+          </section>
         )}
 
-        {/* ══════════════ GROUPS ══════════════ */}
-        {tab === 'groups' && (
-          <div>
-            <h2 className="sec-hdr">Group Standings</h2>
+        {participantTab === 'groups' && (
+          <section className="participant-section">
             <GroupTable standings={standings} assignments={assignments} participants={participants} />
             {lastUpdated && (
               <div className="last-updated">Last updated: {lastUpdated.toLocaleTimeString('en-GB')}</div>
             )}
-          </div>
-        )}
-
-        {/* ══════════════ PRIZES ══════════════ */}
-        {tab === 'prizes' && (
-          <div>
-            <h2 className="sec-hdr">Prize Pot Calculator</h2>
-
-            <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
-              <div className="rbox" data-label="BUY-IN" style={{ flex: '1 1 220px', minWidth: '200px' }}>
-                <label style={{ fontFamily: 'Oswald,sans-serif', fontSize: '.8rem', fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase', display: 'block', marginBottom: '.4rem' }}>
-                  Buy-in per person
-                </label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '.4rem' }}>
-                  <span style={{ fontFamily: 'Oswald,sans-serif', fontSize: '1.2rem', fontWeight: 700 }}>£</span>
-                  <input className="inp" type="number" min="0" step="0.5" value={buyIn} onChange={e => setBuyIn(e.target.value)} style={{ width: '110px' }} />
-                </div>
-                <div style={{ marginTop: '.75rem', fontFamily: 'Courier Prime,monospace', fontSize: '.85rem' }}>
-                  <span style={{ fontFamily: 'Oswald,sans-serif', fontWeight: 600, fontSize: '.8rem', letterSpacing: '.08em', textTransform: 'uppercase' }}>Participants:</span> {participants.length}
-                </div>
-              </div>
-
-              <div style={{ flex: '1 1 220px', minWidth: '200px', background: 'var(--green)', border: '4px solid var(--ink)', borderRadius: '6px', padding: '1.25rem', textAlign: 'center', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                <div style={{ fontFamily: 'Oswald,sans-serif', fontSize: '.85rem', fontWeight: 600, letterSpacing: '.2em', textTransform: 'uppercase', color: 'var(--parchment)', marginBottom: '.35rem' }}>
-                  Total Prize Pot
-                </div>
-                <div className="pot-num">{fmt(pot)}</div>
-              </div>
-            </div>
-
-            <h3 className="sec-hdr">Prize Splits</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-              {prizes.map((p, i) => (
-                <div key={i} className="rbox" style={{ textAlign: 'center' }}>
-                  <div style={{ fontFamily: 'Special Elite,cursive', fontSize: '1rem', marginBottom: '.5rem' }}>{p.label}</div>
-                  <div style={{ fontFamily: 'Oswald,sans-serif', fontSize: '.75rem', fontWeight: 600, color: '#888', letterSpacing: '.1em', marginBottom: '.35rem' }}>{p.pct} of pot</div>
-                  <div className="scoreboard">{fmt(p.amt)}</div>
-                </div>
-              ))}
-            </div>
-
-            <div className="divider">⚽</div>
-
-            {winnerResult && <WinnerBanner result={winnerResult} />}
-
-            {assignments && (
-              <div style={{ textAlign: 'center', margin: '1rem 0' }}>
-                <button
-                  className="btn-outline"
-                  disabled={!participants.some((_, i) => participantEmails[i]?.endsWith('@autone.io'))}
-                  onClick={() => {
-                    const winnerName = winnerResult?.winner?.name ?? 'TBD';
-                    const lbText = leaderboard
-                      .map((row, rank) => `${rank + 1}. ${row.name} — ${row.pts} pts`)
-                      .join('\n');
-                    participants.forEach((name, i) => {
-                      const email = participantEmails[i];
-                      if (!email?.endsWith('@autone.io')) return;
-                      sendFinalEmail(email, name, winnerName, lbText);
-                    });
-                  }}
-                >
-                  📧 Email Final Results to All
-                </button>
-              </div>
-            )}
-
-            {assignments ? (
-              <>
-                <h3 className="sec-hdr">Points Leaderboard</h3>
-                <div style={{ fontFamily: 'Special Elite,cursive', fontSize: '.82rem', color: '#888', marginBottom: '.75rem' }}>
-                  Points awarded per round reached — Group Stage=1 · R32=3 · R16=6 · QF=10 · SF=15 · 3rd=20 · Final=25 · Champion=40
-                </div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table className="tbl">
-                    <thead>
-                      <tr><th>#</th><th>Participant</th><th>Team(s)</th><th>Points</th></tr>
-                    </thead>
-                    <tbody>
-                      {leaderboard.map(({ name, i, tids, pts }, rank) => (
-                        <tr key={i} className={rank === 0 ? 'lb-rank-1' : rank === 1 ? 'lb-rank-2' : rank === 2 ? 'lb-rank-3' : ''}>
-                          <td style={{ fontFamily: 'Oswald,sans-serif', fontWeight: 700, color: 'var(--green)', fontSize: '.88rem', width: '2.5rem' }}>
-                            {rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank + 1}
-                          </td>
-                          <td style={{ fontFamily: 'Special Elite,cursive', fontSize: '.95rem', whiteSpace: 'nowrap' }}>{name}</td>
-                          <td>{tids.map(tid => <TeamPill key={tid} tid={tid} status={teamStatus[tid] || 'active'} />)}</td>
-                          <td className="pts-cell">{pts}<span className="pts-label">pts</span></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : (
-              <div style={{ textAlign: 'center', padding: '2rem', fontFamily: 'Special Elite,cursive', color: '#888', fontSize: '1rem' }}>
-                Complete the draw first to see the leaderboard.
-              </div>
-            )}
-
-            {lastUpdated && (
-              <div className="last-updated">Last updated: {lastUpdated.toLocaleTimeString('en-GB')}</div>
-            )}
-          </div>
+          </section>
         )}
       </div>
 
       <div className="footer">
         ⚽ &nbsp; FIFA World Cup 2026 &nbsp;·&nbsp; USA, Canada &amp; Mexico &nbsp;·&nbsp; June–July 2026 &nbsp; ⚽
+        <br />
+        <button className="admin-link" style={{ marginTop: '.5rem' }} onClick={() => setAdminMode(true)}>
+          Admin
+        </button>
       </div>
     </div>
   );

@@ -3,18 +3,9 @@ import { findTeamId, formatRoundLabel, isLive, stageOrder } from '../utils.js';
 import { TEAMS } from '../data.js';
 import { todayISO } from '../api.js';
 
-const FILTERS = [
-  { id: 'all',      label: 'All' },
-  { id: 'today',    label: 'Today' },
-  { id: 'myteams',  label: 'My Teams' },
-  { id: 'group',    label: 'Group Stage' },
-  { id: 'knockout', label: 'Knockout' },
-];
-
 function MatchRow({ match, myTeamIds, participants, assignments }) {
   const live = isLive(match);
   const finished = match.status === 'FINISHED';
-  const scheduled = ['TIMED','SCHEDULED'].includes(match.status);
 
   const homeId = findTeamId(match.homeTeam);
   const awayId = findTeamId(match.awayTeam);
@@ -50,36 +41,31 @@ function MatchRow({ match, myTeamIds, participants, assignments }) {
 
   return (
     <div className={`fix-row ${live ? 'fix-row-live' : ''} ${finished ? 'fix-row-ft' : ''}`}>
-      {/* Date/time */}
       <div className="fix-date">
         {live ? (
           <span className="fix-live-badge">LIVE</span>
         ) : (
           <>
             <span className="fix-day">{dateStr}</span>
-            <span className="fix-time">{timeStr}</span>
+            <span className="fix-time">{timeStr} BST</span>
           </>
         )}
       </div>
 
-      {/* Home team */}
       <div className={`fix-team fix-home ${homeHighlight ? 'fix-my-team' : ''}`}>
         <span className="fix-flag">{homeFlag}</span>
         <span className="fix-name">{match.homeTeam?.shortName || match.homeTeam?.name}</span>
         {homeOwner && <span className="fix-owner">{homeOwner}</span>}
       </div>
 
-      {/* Score / vs */}
       {scoreDisplay}
 
-      {/* Away team */}
       <div className={`fix-team fix-away ${awayHighlight ? 'fix-my-team' : ''}`}>
         {awayOwner && <span className="fix-owner">{awayOwner}</span>}
         <span className="fix-name">{match.awayTeam?.shortName || match.awayTeam?.name}</span>
         <span className="fix-flag">{awayFlag}</span>
       </div>
 
-      {/* Venue */}
       {match.venue && (
         <div className="fix-venue">{match.venue}</div>
       )}
@@ -93,36 +79,31 @@ function findOwner(teamId, assignments, participants) {
   if (!entry) return null;
   const name = participants[parseInt(entry[0], 10)];
   if (!name) return null;
-  // Return shortened name
   const parts = name.split(' ');
   return parts[0] + (parts[1] ? ' ' + parts[1][0] + '.' : '');
 }
 
-export default function Fixtures({ allMatches, assignments, participants, lastUpdated }) {
-  const [filter, setFilter] = useState('all');
+export default function Fixtures({ allMatches, assignments, participants, lastUpdated, myTeamIds: myTeamIdsProp }) {
+  const [stageFilter, setStageFilter] = useState('all');  // 'all'|'group'|'knockout'
+  const [teamFilter,  setTeamFilter]  = useState('all');  // 'all'|'myteams'
+  const [timeFilter,  setTimeFilter]  = useState('all');  // 'all'|'today'
   const today = todayISO();
 
-  const myTeamIds = useMemo(() => {
-    if (!assignments) return new Set();
-    return new Set(Object.values(assignments).flat());
-  }, [assignments]);
+  const myTeamIds = myTeamIdsProp ?? new Set();
 
   const filtered = useMemo(() => {
     if (!allMatches?.length) return [];
     return allMatches.filter(m => {
-      if (filter === 'today') return m.utcDate.startsWith(today);
-      if (filter === 'myteams') {
-        const hId = findTeamId(m.homeTeam);
-        const aId = findTeamId(m.awayTeam);
-        return myTeamIds.has(hId) || myTeamIds.has(aId);
-      }
-      if (filter === 'group')    return m.stage === 'GROUP_STAGE';
-      if (filter === 'knockout') return m.stage !== 'GROUP_STAGE';
+      const hId = findTeamId(m.homeTeam);
+      const aId = findTeamId(m.awayTeam);
+      if (stageFilter === 'group'    && m.stage !== 'GROUP_STAGE') return false;
+      if (stageFilter === 'knockout' && m.stage === 'GROUP_STAGE') return false;
+      if (teamFilter  === 'myteams'  && !myTeamIds.has(hId) && !myTeamIds.has(aId)) return false;
+      if (timeFilter  === 'today'    && !m.utcDate.startsWith(today)) return false;
       return true;
     });
-  }, [allMatches, filter, myTeamIds, today]);
+  }, [allMatches, stageFilter, teamFilter, timeFilter, myTeamIds, today]);
 
-  // Group by stage then by group/matchday, preserving chronological order
   const sections = useMemo(() => {
     const bySection = {};
     filtered.forEach(m => {
@@ -159,20 +140,25 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
 
   return (
     <div>
-      {/* Filter bar */}
       <div className="fix-filters">
-        {FILTERS.map(f => (
-          <button
-            key={f.id}
-            className={`fix-filter-btn ${filter === f.id ? 'active' : ''}`}
-            onClick={() => setFilter(f.id)}
-          >
-            {f.label}
-            {f.id === 'myteams' && !assignments && (
-              <span style={{ fontSize: '.65rem', marginLeft: '4px', opacity: .6 }}>(draw first)</span>
-            )}
-          </button>
-        ))}
+        <div className="fix-filter-group">
+          <span className="fix-filter-label">Stage</span>
+          {[{id:'all',label:'All'},{id:'group',label:'Group'},{id:'knockout',label:'Knockout'}].map(f => (
+            <button key={f.id} className={`fix-filter-btn${stageFilter === f.id ? ' active' : ''}`} onClick={() => setStageFilter(f.id)}>{f.label}</button>
+          ))}
+        </div>
+        <div className="fix-filter-group">
+          <span className="fix-filter-label">Teams</span>
+          {[{id:'all',label:'All'},{id:'myteams',label:'My Teams'}].map(f => (
+            <button key={f.id} className={`fix-filter-btn${teamFilter === f.id ? ' active' : ''}`} onClick={() => setTeamFilter(f.id)}>{f.label}</button>
+          ))}
+        </div>
+        <div className="fix-filter-group">
+          <span className="fix-filter-label">When</span>
+          {[{id:'all',label:'All'},{id:'today',label:'Today'}].map(f => (
+            <button key={f.id} className={`fix-filter-btn${timeFilter === f.id ? ' active' : ''}`} onClick={() => setTimeFilter(f.id)}>{f.label}</button>
+          ))}
+        </div>
       </div>
 
       {sections.length === 0 && (
