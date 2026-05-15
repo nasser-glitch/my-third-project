@@ -144,13 +144,33 @@ export const PROGRESS_LABELS = [
   'Quarter-Finals', 'Semi-Finals', 'Third Place', 'Final', '🏆 World Champions',
 ];
 
-export const POINTS_MAP = [0, 1, 3, 6, 10, 15, 20, 25, 40];
+// Points by highest knockout round reached (indexed by computeTeamProgress 0–8).
+// Group stage wins are handled separately (2pts each) and are always additive.
+const KNOCKOUT_PTS = [0, 0, 3, 5, 8, 12, 15, 17, 20];
+
+function getUnderdogMultiplier(fifaRank) {
+  if (!fifaRank || fifaRank <= 10) return 1;
+  if (fifaRank <= 20) return 1.1;
+  if (fifaRank <= 32) return 1.25;
+  return 1.4;
+}
+
+function computeGroupWins(teamId, allMatches) {
+  return allMatches.filter(m =>
+    m.status === 'FINISHED' &&
+    m.stage === 'GROUP_STAGE' &&
+    getWinnerTeamId(m) === teamId
+  ).length;
+}
 
 export function computeParticipantPoints(tids, allMatches) {
-  return tids.reduce(
-    (sum, tid) => sum + (POINTS_MAP[computeTeamProgress(tid, allMatches)] ?? 0),
-    0
-  );
+  return tids.reduce((sum, teamId) => {
+    const team = TEAMS.find(t => t.id === teamId);
+    const multiplier = getUnderdogMultiplier(team?.fifaRank);
+    const groupPts   = computeGroupWins(teamId, allMatches) * 2;
+    const knockoutPts = KNOCKOUT_PTS[computeTeamProgress(teamId, allMatches)] ?? 0;
+    return sum + (groupPts + knockoutPts) * multiplier;
+  }, 0);
 }
 
 export function computeTeamProgress(teamId, allMatches) {

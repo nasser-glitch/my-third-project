@@ -569,8 +569,8 @@ export default function App() {
             <h2 className="rules-title">How It Works</h2>
             <ul className="rules-list">
               <li>Sign up and you&apos;ll be randomly assigned <strong>2 countries</strong> immediately.</li>
-              <li>Points are earned as your teams progress through the tournament.</li>
-              <li>Points per round: Group Stage=1 · R32=3 · R16=6 · QF=10 · SF=15 · 3rd=20 · Final=25 · Champion=40</li>
+              <li>Points: Group stage win=2 · R32=3 · R16=5 · QF=8 · SF=12 · 3rd=15 · Final=17 · Champion=20 (knockout = highest round only)</li>
+              <li>Underdog bonus (FIFA ranking): rank 11–20=×1.1 · rank 21–32=×1.25 · rank 33+=×1.4 — applied to your team&apos;s total</li>
               <li>The participant with the most points wins a <strong>digital trophy</strong>. 🏆</li>
               <li>Sign up with your <strong>@autone.io</strong> email — teams are assigned instantly!</li>
             </ul>
