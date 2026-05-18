@@ -118,16 +118,12 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
     const bySection = {};
     filtered.forEach(m => {
       const key = m.stage === 'GROUP_STAGE'
-        ? `GROUP_STAGE__${m.group || ''}__${m.matchday || ''}`
+        ? `GROUP_STAGE__${m.group || ''}`
         : m.stage;
-      if (!bySection[key]) bySection[key] = { stage: m.stage, group: m.group, matchday: m.matchday, matches: [] };
+      if (!bySection[key]) bySection[key] = { stage: m.stage, group: m.group, matches: [] };
       bySection[key].matches.push(m);
     });
-    return Object.values(bySection).sort((a, b) => {
-      const so = stageOrder(a.stage) - stageOrder(b.stage);
-      if (so !== 0) return so;
-      return (a.matchday || 0) - (b.matchday || 0);
-    });
+    return Object.values(bySection).sort((a, b) => stageOrder(a.stage) - stageOrder(b.stage));
   }, [filtered]);
 
   // ── By Day sections ─────────────────────────────────────────────
@@ -154,7 +150,7 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
   function groupSectionLabel(sec) {
     if (sec.stage === 'GROUP_STAGE') {
       const g = (sec.group || '').replace('GROUP_', '');
-      return `Group ${g}${sec.matchday ? ` · Matchday ${sec.matchday}` : ''}`;
+      return `Group ${g}`;
     }
     return formatRoundLabel(sec.stage);
   }
