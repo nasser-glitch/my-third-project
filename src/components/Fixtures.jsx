@@ -3,7 +3,7 @@ import { findTeamId, formatRoundLabel, isLive, stageOrder, getWcRank } from '../
 import { TEAMS } from '../data.js';
 import { todayISO } from '../api.js';
 
-function MatchRow({ match, myTeamIds, participants, assignments }) {
+function MatchRow({ match, myTeamIds, participants, assignments, showDate }) {
   const live = isLive(match);
   const finished = match.status === 'FINISHED';
 
@@ -20,6 +20,9 @@ function MatchRow({ match, myTeamIds, participants, assignments }) {
   const d = new Date(match.utcDate);
   const dateStr = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/London' });
   const timeStr = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
+
+  // Context label shown in day-view rows (replaces the date, since the day header already shows it)
+  const stageCtx = formatRoundLabel(match.stage, match.group);
 
   const homeHighlight = myTeamIds.has(homeId);
   const awayHighlight = myTeamIds.has(awayId);
@@ -48,8 +51,9 @@ function MatchRow({ match, myTeamIds, participants, assignments }) {
           <span className="fix-live-badge">LIVE</span>
         ) : (
           <>
-            <span className="fix-day">{dateStr}</span>
+            {showDate && <span className="fix-day">{dateStr}</span>}
             <span className="fix-time">{timeStr} BST</span>
+            {!showDate && <span className="fix-stage-ctx">{stageCtx}</span>}
           </>
         )}
       </div>
@@ -88,9 +92,10 @@ function findOwner(teamId, assignments, participants) {
 }
 
 export default function Fixtures({ allMatches, assignments, participants, lastUpdated, myTeamIds: myTeamIdsProp }) {
-  const [stageFilter, setStageFilter] = useState('all');  // 'all'|'group'|'knockout'
-  const [teamFilter,  setTeamFilter]  = useState('all');  // 'all'|'myteams'
-  const [timeFilter,  setTimeFilter]  = useState('all');  // 'all'|'today'
+  const [viewMode,    setViewMode]    = useState('group'); // 'group'|'day'
+  const [stageFilter, setStageFilter] = useState('all');   // 'all'|'group'|'knockout'
+  const [teamFilter,  setTeamFilter]  = useState('all');   // 'all'|'myteams'
+  const [timeFilter,  setTimeFilter]  = useState('all');   // 'all'|'today'
   const today = todayISO();
 
   const myTeamIds = myTeamIdsProp ?? new Set();
@@ -108,7 +113,8 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
     });
   }, [allMatches, stageFilter, teamFilter, timeFilter, myTeamIds, today]);
 
-  const sections = useMemo(() => {
+  // ── By Group sections ───────────────────────────────────────────
+  const groupSections = useMemo(() => {
     const bySection = {};
     filtered.forEach(m => {
       const key = m.stage === 'GROUP_STAGE'
@@ -124,13 +130,38 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
     });
   }, [filtered]);
 
-  function sectionLabel(sec) {
+  // ── By Day sections ─────────────────────────────────────────────
+  const daySections = useMemo(() => {
+    const byDay = {};
+    filtered.forEach(m => {
+      const d = new Date(m.utcDate);
+      // en-CA gives YYYY-MM-DD which sorts lexicographically
+      const dayKey = d.toLocaleDateString('en-CA', { timeZone: 'Europe/London' });
+      if (!byDay[dayKey]) byDay[dayKey] = { dayKey, matches: [] };
+      byDay[dayKey].matches.push(m);
+    });
+    return Object.values(byDay)
+      .sort((a, b) => a.dayKey.localeCompare(b.dayKey))
+      .map(sec => ({
+        ...sec,
+        matches: [...sec.matches].sort((a, b) => new Date(a.utcDate) - new Date(b.utcDate)),
+        label: new Date(sec.dayKey + 'T12:00:00').toLocaleDateString('en-GB', {
+          weekday: 'long', day: 'numeric', month: 'long',
+        }),
+      }));
+  }, [filtered]);
+
+  function groupSectionLabel(sec) {
     if (sec.stage === 'GROUP_STAGE') {
       const g = (sec.group || '').replace('GROUP_', '');
       return `Group ${g}${sec.matchday ? ` · Matchday ${sec.matchday}` : ''}`;
     }
     return formatRoundLabel(sec.stage);
   }
+
+  const sections    = viewMode === 'day' ? daySections    : groupSections;
+  const showDate    = viewMode === 'group';
+  const isEmpty     = sections.length === 0;
 
   if (!allMatches?.length) {
     return (
@@ -145,6 +176,14 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
   return (
     <div>
       <div className="fix-filters">
+        {/* View mode toggle — shown first, full width */}
+        <div className="fix-filter-group fix-view-toggle">
+          <span className="fix-filter-label">View</span>
+          {[{id:'group',label:'By Group'},{id:'day',label:'By Day'}].map(f => (
+            <button key={f.id} className={`fix-filter-btn${viewMode === f.id ? ' active' : ''}`} onClick={() => setViewMode(f.id)}>{f.label}</button>
+          ))}
+        </div>
+
         <div className="fix-filter-group">
           <span className="fix-filter-label">Stage</span>
           {[{id:'all',label:'All'},{id:'group',label:'Group'},{id:'knockout',label:'Knockout'}].map(f => (
@@ -165,7 +204,7 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
         </div>
       </div>
 
-      {sections.length === 0 && (
+      {isEmpty && (
         <div style={{ textAlign: 'center', padding: '2rem', fontFamily: 'Special Elite, cursive', color: '#888' }}>
           No matches found for this filter.
         </div>
@@ -173,7 +212,9 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
 
       {sections.map((sec, si) => (
         <div key={si} className="fix-section">
-          <div className="fix-section-hdr">{sectionLabel(sec)}</div>
+          <div className="fix-section-hdr">
+            {viewMode === 'day' ? sec.label : groupSectionLabel(sec)}
+          </div>
           <div className="fix-list">
             {sec.matches.map(m => (
               <MatchRow
@@ -182,6 +223,7 @@ export default function Fixtures({ allMatches, assignments, participants, lastUp
                 myTeamIds={myTeamIds}
                 participants={participants}
                 assignments={assignments}
+                showDate={showDate}
               />
             ))}
           </div>

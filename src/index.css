@@ -492,6 +492,8 @@ body::after {
 }
 .fix-day  { font-family: 'Oswald', sans-serif; font-size: .7rem; font-weight: 600; color: var(--ink); letter-spacing: .05em; text-transform: uppercase; }
 .fix-time { font-family: 'Courier Prime', monospace; font-size: .78rem; color: var(--green); font-weight: 700; }
+.fix-stage-ctx { font-family: 'Oswald', sans-serif; font-size: .65rem; font-weight: 400; color: #999; letter-spacing: .04em; margin-top: .1rem; }
+.fix-view-toggle { border-bottom: 1px solid #ddd; padding-bottom: .6rem; margin-bottom: .1rem; }
 
 .fix-live-badge {
   display: inline-block;
