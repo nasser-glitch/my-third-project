@@ -11,7 +11,7 @@ export async function loadAllGames() {
   const { data, error } = await supabase
     .from('sweepstake')
     .select('id, teams_per_person, participants, participant_emails')
-    .order('created_at', { ascending: false });
+    .order('updated_at', { ascending: false });
   if (error) console.error('Supabase loadAllGames error:', error);
   return data || [];
 }
