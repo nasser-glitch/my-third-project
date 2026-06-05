@@ -932,7 +932,7 @@ export default function App() {
                 />
                 <input
                   className="inp signup-inp"
-                  placeholder="Your full name"
+                  placeholder="Your first name"
                   value={signupName}
                   onChange={e => setSignupName(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSignup()}
