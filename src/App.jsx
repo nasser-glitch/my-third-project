@@ -3,7 +3,7 @@ import { TEAMS } from './data.js';
 import { shuffle, getTeam, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel, getWcRank } from './utils.js';
 import { fetchTodaysMatches, fetchAllMatches, fetchStandings, fetchNextMatch } from './api.js';
 import { sendDrawEmail } from './email.js';
-import supabase, { loadSweepstake, saveSweepstake } from './supabase.js';
+import supabase, { loadAllGames, loadSweepstake, saveSweepstake, createGame, deleteGame } from './supabase.js';
 
 import TeamPill       from './components/TeamPill.jsx';
 import Ticker         from './components/Ticker.jsx';
@@ -13,8 +13,6 @@ import HowItWorks    from './components/HowItWorks.jsx';
 import ToastContainer from './components/Toast.jsx';
 
 // ── computeWinner ─────────────────────────────────────────────────
-// Finds the sweepstake winner. If two participants share the WC-winning team,
-// their second team's furthest stage reached acts as tiebreaker.
 function computeWinner(assignments, participants, allMatches) {
   if (!assignments || !allMatches?.length) return null;
   const finalMatch = allMatches.find(m => m.stage === 'FINAL' && m.status === 'FINISHED');
@@ -133,24 +131,30 @@ function computeEliminations(allMatches, standings, assignments, participants, p
   return { newStatus, toasts };
 }
 
-// ── Self-service team assignment ──────────────────────────────────
-function assignTeamsForNewSignup(currentAssignments, currentDupIds) {
-  const allIds    = TEAMS.map(t => t.id);
-  const taken     = new Set(Object.values(currentAssignments).flat());
-  const free      = allIds.filter(id => !taken.has(id));
+// ── Team assignment: assigns N teams per person ───────────────────
+function assignTeamsForNewSignup(currentAssignments, currentDupIds, teamsPerPerson = 2) {
+  const allIds = TEAMS.map(t => t.id);
+  const taken  = new Set(Object.values(currentAssignments).flat());
+  let free     = shuffle(allIds.filter(id => !taken.has(id)));
   const newDupIds = [...currentDupIds];
-  let t1, t2;
-  if (free.length >= 2) {
-    const s = shuffle(free); [t1, t2] = [s[0], s[1]];
-  } else if (free.length === 1) {
-    t1 = free[0]; t2 = shuffle(allIds)[0];
-    if (!newDupIds.includes(t2)) newDupIds.push(t2);
-  } else {
-    const s = shuffle(allIds); [t1, t2] = [s[0], s[1]];
-    if (!newDupIds.includes(t1)) newDupIds.push(t1);
-    if (!newDupIds.includes(t2)) newDupIds.push(t2);
+  const teams = [];
+  const usedInDraw = new Set();
+
+  for (let i = 0; i < teamsPerPerson; i++) {
+    if (free.length > 0) {
+      const t = free.shift();
+      teams.push(t);
+      usedInDraw.add(t);
+    } else {
+      const candidates = shuffle(allIds).filter(t => !usedInDraw.has(t));
+      const t = candidates.length > 0 ? candidates[0] : allIds[0];
+      teams.push(t);
+      usedInDraw.add(t);
+      if (!newDupIds.includes(t)) newDupIds.push(t);
+    }
   }
-  return { t1, t2, newDupIds };
+
+  return { teams, newDupIds };
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -164,16 +168,32 @@ export default function App() {
   const [teamStatus,         setTeamStatus]         = useState({});
   const [dupIds,             setDupIds]             = useState([]);
   const [participantEmails,  setParticipantEmails]  = useState([]);
+  const [myEmail,            setMyEmail]            = useState('');
+  const [signupMode,         setSignupMode]         = useState('signup');
+  const [signupName,         setSignupName]         = useState('');
+  const [signupEmail,        setSignupEmail]        = useState('');
+  const [signupCode,         setSignupCode]         = useState('');
+  const [signupError,        setSignupError]        = useState('');
+  const [participantTab,     setParticipantTab]     = useState('teams');
+
+  // ── Multi-game state ──────────────────────────────────────────
+  const [allGames,           setAllGames]           = useState([]);
+  const [currentGameCode,    setCurrentGameCode]    = useState(null);
+  const [teamsPerPerson,     setTeamsPerPerson]     = useState(2);
+  const [myGames,            setMyGames]            = useState([]);
+  const [showGamePicker,     setShowGamePicker]     = useState(false);
+
+  // ── Admin state ───────────────────────────────────────────────
   const [adminMode,          setAdminMode]          = useState(false);
   const [adminAuthed,        setAdminAuthed]        = useState(false);
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [adminError,         setAdminError]         = useState('');
-  const [myEmail,            setMyEmail]            = useState(() => localStorage.getItem('wc2026_myemail') || '');
-  const [signupMode,         setSignupMode]         = useState('signup');
-  const [signupName,         setSignupName]         = useState('');
-  const [signupEmail,        setSignupEmail]        = useState('');
-  const [signupError,        setSignupError]        = useState('');
-  const [participantTab,     setParticipantTab]     = useState('teams'); // 'teams'|'leaderboard'|'fixtures'|'groups'
+  const [adminView,          setAdminView]          = useState('games'); // 'games'|'create'|'detail'
+  const [adminSelectedGame,  setAdminSelectedGame]  = useState(null);
+  const [adminGameData,      setAdminGameData]      = useState(null);
+  const [newGameCode,        setNewGameCode]        = useState('');
+  const [newGameTeams,       setNewGameTeams]       = useState(2);
+  const [createGameError,    setCreateGameError]    = useState('');
 
   // ── API state ─────────────────────────────────────────────────
   const [todaysMatches, setTodaysMatches] = useState([]);
@@ -199,44 +219,63 @@ export default function App() {
   useEffect(() => { assignRef.current = assignments;   }, [assignments]);
   useEffect(() => { partRef.current   = participants;  }, [participants]);
 
-  // ── Load from Supabase on first open ─────────────────────────
+  // ── Init: load all games, auto-restore session if saved ──────
   useEffect(() => {
-    loadSweepstake().then(data => {
-      if (data) {
-        const names = data.participants ?? [];
-        setParticipants(names);
-        setAssignments(data.assignments ?? null);
-        setTeamStatus(data.team_status ?? {});
-        setDupIds(data.dup_ids ?? []);
-        setParticipantEmails(data.participant_emails ?? Array(names.length).fill(''));
-        emailedMatchIdsRef.current = new Set(data.emailed_match_ids ?? []);
+    async function init() {
+      const games = await loadAllGames();
+      setAllGames(games);
+
+      const savedEmail = localStorage.getItem('wc2026_myemail') || '';
+      const savedCode  = localStorage.getItem('wc2026_gamecode') || '';
+
+      if (savedEmail && savedCode) {
+        const game = games.find(g => g.id === savedCode);
+        if (game) {
+          const data = await loadSweepstake(savedCode);
+          if (data) {
+            const names = data.participants ?? [];
+            setParticipants(names);
+            setAssignments(data.assignments ?? null);
+            setTeamStatus(data.team_status ?? {});
+            setDupIds(data.dup_ids ?? []);
+            setParticipantEmails(data.participant_emails ?? Array(names.length).fill(''));
+            setTeamsPerPerson(data.teams_per_person ?? 2);
+            emailedMatchIdsRef.current = new Set(data.emailed_match_ids ?? []);
+            setCurrentGameCode(savedCode);
+            setMyEmail(savedEmail);
+          }
+        }
       }
+
       setLoading(false);
-    });
+    }
+    init();
   }, []);
 
   // ── Save to Supabase (debounced 1 second) ─────────────────────
   useEffect(() => {
-    if (loading) return;
+    if (loading || !currentGameCode) return;
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      saveSweepstake({
+      saveSweepstake(currentGameCode, {
         participants,
         assignments,
         team_status: teamStatus,
         dup_ids: dupIds,
         participant_emails: participantEmails,
+        teams_per_person: teamsPerPerson,
       });
     }, 1000);
-  }, [participants, assignments, teamStatus, dupIds, participantEmails, loading]);
+  }, [participants, assignments, teamStatus, dupIds, participantEmails, loading, currentGameCode, teamsPerPerson]);
 
-  // ── Real-time sync across all open tabs ──────────────────────
+  // ── Real-time sync for current game ──────────────────────────
   useEffect(() => {
+    if (!currentGameCode) return;
     const channel = supabase
-      .channel('sweepstake-live')
+      .channel(`sweepstake-${currentGameCode}`)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'sweepstake' },
+        { event: 'UPDATE', schema: 'public', table: 'sweepstake', filter: `id=eq.${currentGameCode}` },
         payload => {
           const row = payload.new;
           setParticipants(row.participants ?? []);
@@ -248,7 +287,7 @@ export default function App() {
       )
       .subscribe();
     return () => supabase.removeChannel(channel);
-  }, []);
+  }, [currentGameCode]);
 
   // ── API refresh ───────────────────────────────────────────────
   const doRefresh = useCallback(async (force = false) => {
@@ -330,7 +369,6 @@ export default function App() {
     }
   }, [allMatches, standings]);
 
-
   const dismissToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
@@ -338,55 +376,154 @@ export default function App() {
   useEffect(() => () => clearTimeout(pollRef.current), []);
 
   // ── Sign-up ───────────────────────────────────────────────────
-  const handleSignup = useCallback(() => {
+  const handleSignup = useCallback(async () => {
+    const code  = signupCode.trim().toUpperCase();
     const name  = signupName.trim();
     const email = signupEmail.trim().toLowerCase();
+
+    if (!code)                         { setSignupError('Please enter a game code.'); return; }
     if (!name)                         { setSignupError('Please enter your name.'); return; }
     if (!email.endsWith('@autone.io')) { setSignupError('Please use your @autone.io email.'); return; }
-    if (participantEmails.includes(email)) {
+
+    const game = allGames.find(g => g.id.toUpperCase() === code);
+    if (!game) { setSignupError('Game code not found. Check with your admin.'); return; }
+
+    const data = await loadSweepstake(game.id);
+    const currentParticipants = data?.participants ?? [];
+    const currentEmails       = data?.participant_emails ?? [];
+    const currentAssignments  = data?.assignments ?? {};
+    const currentDupIds       = data?.dup_ids ?? [];
+    const currentStatus       = data?.team_status ?? {};
+    const tpp = data?.teams_per_person ?? game.teams_per_person ?? 2;
+
+    if (currentEmails.includes(email)) {
+      // Already in this game — just sign in
+      setParticipants(currentParticipants);
+      setAssignments(currentAssignments);
+      setTeamStatus(currentStatus);
+      setDupIds(currentDupIds);
+      setParticipantEmails(currentEmails);
+      setTeamsPerPerson(tpp);
+      emailedMatchIdsRef.current = new Set(data?.emailed_match_ids ?? []);
+      setCurrentGameCode(game.id);
       localStorage.setItem('wc2026_myemail', email);
+      localStorage.setItem('wc2026_gamecode', game.id);
       setMyEmail(email);
       setSignupError('');
       return;
     }
-    const newIdx = participants.length;
-    const { t1, t2, newDupIds } = assignTeamsForNewSignup(assignments || {}, dupIds);
-    const newParticipants = [...participants, name];
-    const newEmails       = [...participantEmails, email];
-    const newAssignments  = { ...(assignments || {}), [newIdx]: [t1, t2] };
+
+    const newIdx = currentParticipants.length;
+    const { teams, newDupIds } = assignTeamsForNewSignup(currentAssignments, currentDupIds, tpp);
+    const newParticipants = [...currentParticipants, name];
+    const newEmails       = [...currentEmails, email];
+    const newAssignments  = { ...currentAssignments, [newIdx]: teams };
+
     setParticipants(newParticipants);
     setParticipantEmails(newEmails);
     setAssignments(newAssignments);
     setDupIds(newDupIds);
+    setTeamStatus(currentStatus);
+    setTeamsPerPerson(tpp);
+    setCurrentGameCode(game.id);
+
     localStorage.setItem('wc2026_myemail', email);
+    localStorage.setItem('wc2026_gamecode', game.id);
     setMyEmail(email);
     setSignupError('');
-    const t1obj = getTeam(t1);
-    const t2obj = getTeam(t2);
-    sendDrawEmail(
-      email, name,
-      t1obj ? `${t1obj.flag} ${t1obj.name}` : '?',
-      t2obj ? `${t2obj.flag} ${t2obj.name}` : '?'
-    );
-  }, [signupName, signupEmail, participants, participantEmails, assignments, dupIds]);
+
+    saveSweepstake(game.id, {
+      participants: newParticipants,
+      participant_emails: newEmails,
+      assignments: newAssignments,
+      dup_ids: newDupIds,
+      team_status: currentStatus,
+      teams_per_person: tpp,
+    });
+
+    const teamNames = teams.map(tid => { const t = getTeam(tid); return t ? `${t.flag} ${t.name}` : '?'; });
+    sendDrawEmail(email, name, teamNames[0] || '?', teamNames[1] || '?');
+
+    loadAllGames().then(setAllGames);
+  }, [signupCode, signupName, signupEmail, allGames]);
 
   // ── Sign-in ───────────────────────────────────────────────────
-  const handleSignIn = useCallback(() => {
+  const handleSignIn = useCallback(async () => {
     const email = signupEmail.trim().toLowerCase();
     if (!email.endsWith('@autone.io')) { setSignupError('Please use your @autone.io email.'); return; }
-    if (!participantEmails.includes(email)) { setSignupError('No account found. Try signing up instead.'); return; }
+
+    const matching = allGames.filter(g => (g.participant_emails || []).includes(email));
+
+    if (matching.length === 0) {
+      setSignupError('No account found. Sign up with a game code first.');
+      return;
+    }
+
+    if (matching.length === 1) {
+      const game = matching[0];
+      const data = await loadSweepstake(game.id);
+      if (data) {
+        const names = data.participants ?? [];
+        setParticipants(names);
+        setAssignments(data.assignments ?? null);
+        setTeamStatus(data.team_status ?? {});
+        setDupIds(data.dup_ids ?? []);
+        setParticipantEmails(data.participant_emails ?? Array(names.length).fill(''));
+        setTeamsPerPerson(data.teams_per_person ?? 2);
+        emailedMatchIdsRef.current = new Set(data.emailed_match_ids ?? []);
+      }
+      setCurrentGameCode(game.id);
+      localStorage.setItem('wc2026_myemail', email);
+      localStorage.setItem('wc2026_gamecode', game.id);
+      setMyEmail(email);
+      setSignupError('');
+    } else {
+      setMyGames(matching);
+      setShowGamePicker(true);
+    }
+  }, [signupEmail, allGames]);
+
+  // ── Game picker (sign-in with multiple games) ─────────────────
+  const handleGamePick = useCallback(async (gameId) => {
+    const email = signupEmail.trim().toLowerCase();
+    const game  = allGames.find(g => g.id === gameId);
+    const data  = await loadSweepstake(gameId);
+    if (data) {
+      const names = data.participants ?? [];
+      setParticipants(names);
+      setAssignments(data.assignments ?? null);
+      setTeamStatus(data.team_status ?? {});
+      setDupIds(data.dup_ids ?? []);
+      setParticipantEmails(data.participant_emails ?? Array(names.length).fill(''));
+      setTeamsPerPerson(data.teams_per_person ?? game?.teams_per_person ?? 2);
+      emailedMatchIdsRef.current = new Set(data.emailed_match_ids ?? []);
+    }
+    setCurrentGameCode(gameId);
     localStorage.setItem('wc2026_myemail', email);
+    localStorage.setItem('wc2026_gamecode', gameId);
     setMyEmail(email);
+    setShowGamePicker(false);
     setSignupError('');
-  }, [signupEmail, participantEmails]);
+  }, [signupEmail, allGames]);
 
   // ── Sign-out ──────────────────────────────────────────────────
   const handleSignOut = useCallback(() => {
     localStorage.removeItem('wc2026_myemail');
+    localStorage.removeItem('wc2026_gamecode');
     setMyEmail('');
+    setCurrentGameCode(null);
+    setParticipants([]);
+    setAssignments(null);
+    setTeamStatus({});
+    setDupIds([]);
+    setParticipantEmails([]);
+    setTeamsPerPerson(2);
     setSignupName('');
     setSignupEmail('');
+    setSignupCode('');
     setSignupError('');
+    setShowGamePicker(false);
+    setMyGames([]);
   }, []);
 
   // ── Admin login ───────────────────────────────────────────────
@@ -401,31 +538,111 @@ export default function App() {
     }
   }, [adminPasswordInput]);
 
-  // ── Remove participant (frees their teams back to pool) ───────
-  const handleRemove = useCallback((idx) => {
-    if (!window.confirm(`Remove ${participants[idx]}? Their teams will be freed back to the pool.`)) return;
-    const newParticipants = participants.filter((_, i) => i !== idx);
-    const newEmails       = participantEmails.filter((_, i) => i !== idx);
-    const newAssignments  = {};
-    Object.entries(assignments || {}).forEach(([k, v]) => {
+  // ── Admin: create game ────────────────────────────────────────
+  const handleCreateGame = useCallback(async () => {
+    const code = newGameCode.trim().toUpperCase();
+    if (!code)                               { setCreateGameError('Please enter a game code.'); return; }
+    if (!/^[A-Z0-9]+$/.test(code))           { setCreateGameError('Code must be letters and numbers only.'); return; }
+    if (allGames.some(g => g.id === code))   { setCreateGameError('That code is already in use.'); return; }
+
+    const err = await createGame(code, newGameTeams);
+    if (err) { setCreateGameError('Failed to create game. Try again.'); return; }
+
+    const games = await loadAllGames();
+    setAllGames(games);
+    setNewGameCode('');
+    setNewGameTeams(2);
+    setCreateGameError('');
+    setAdminView('games');
+  }, [newGameCode, newGameTeams, allGames]);
+
+  // ── Admin: view game detail ───────────────────────────────────
+  const handleAdminViewGame = useCallback(async (gameCode) => {
+    const data = await loadSweepstake(gameCode);
+    setAdminGameData(data);
+    setAdminSelectedGame(gameCode);
+    setAdminView('detail');
+  }, []);
+
+  // ── Admin: delete game ────────────────────────────────────────
+  const handleAdminDeleteGame = useCallback(async (gameCode) => {
+    if (!window.confirm(`Delete game "${gameCode}"? This cannot be undone.`)) return;
+    await deleteGame(gameCode);
+    setAllGames(prev => prev.filter(g => g.id !== gameCode));
+    if (gameCode === currentGameCode) {
+      localStorage.removeItem('wc2026_myemail');
+      localStorage.removeItem('wc2026_gamecode');
+      setMyEmail('');
+      setCurrentGameCode(null);
+      setParticipants([]);
+      setAssignments(null);
+      setTeamStatus({});
+      setDupIds([]);
+      setParticipantEmails([]);
+    }
+  }, [currentGameCode]);
+
+  // ── Admin: remove participant from a game ─────────────────────
+  const handleAdminRemove = useCallback(async (idx) => {
+    if (!adminGameData || !adminSelectedGame) return;
+    const ps   = adminGameData.participants ?? [];
+    const ems  = adminGameData.participant_emails ?? [];
+    const asgn = adminGameData.assignments ?? {};
+    const dups = adminGameData.dup_ids ?? [];
+
+    if (!window.confirm(`Remove ${ps[idx]}? Their teams will be freed back to the pool.`)) return;
+
+    const newPs   = ps.filter((_, i) => i !== idx);
+    const newEms  = ems.filter((_, i) => i !== idx);
+    const newAsgn = {};
+    Object.entries(asgn).forEach(([k, v]) => {
       const oldIdx = parseInt(k);
       if (oldIdx === idx) return;
       const newIdx = oldIdx > idx ? oldIdx - 1 : oldIdx;
-      newAssignments[newIdx] = v;
+      newAsgn[newIdx] = v;
     });
-    const remaining = Object.values(newAssignments).flat();
+    const remaining = Object.values(newAsgn).flat();
     const counts = {};
     remaining.forEach(t => { counts[t] = (counts[t] || 0) + 1; });
-    const newDupIds = dupIds.filter(id => (counts[id] || 0) >= 2);
-    setParticipants(newParticipants);
-    setParticipantEmails(newEmails);
-    setAssignments(Object.keys(newAssignments).length ? newAssignments : null);
-    setDupIds(newDupIds);
-    if (participantEmails[idx] === myEmail) {
+    const newDups = dups.filter(id => (counts[id] || 0) >= 2);
+
+    const newData = {
+      ...adminGameData,
+      participants: newPs,
+      participant_emails: newEms,
+      assignments: Object.keys(newAsgn).length ? newAsgn : null,
+      dup_ids: newDups,
+    };
+    setAdminGameData(newData);
+
+    await saveSweepstake(adminSelectedGame, {
+      participants: newPs,
+      participant_emails: newEms,
+      assignments: Object.keys(newAsgn).length ? newAsgn : null,
+      dup_ids: newDups,
+      team_status: adminGameData.team_status ?? {},
+      teams_per_person: adminGameData.teams_per_person ?? 2,
+    });
+
+    loadAllGames().then(setAllGames);
+
+    if (ems[idx] === myEmail && adminSelectedGame === currentGameCode) {
       localStorage.removeItem('wc2026_myemail');
+      localStorage.removeItem('wc2026_gamecode');
       setMyEmail('');
+      setCurrentGameCode(null);
+      setParticipants([]);
+      setAssignments(null);
+      setTeamStatus({});
+      setDupIds([]);
+      setParticipantEmails([]);
+    } else if (adminSelectedGame === currentGameCode) {
+      setParticipants(newPs);
+      setParticipantEmails(newEms);
+      setAssignments(Object.keys(newAsgn).length ? newAsgn : null);
+      setDupIds(newDups);
     }
-  }, [participants, participantEmails, assignments, dupIds, myEmail]);
+  }, [adminGameData, adminSelectedGame, myEmail, currentGameCode]);
 
   // ── Derived values ────────────────────────────────────────────
   const leaderboard = useMemo(() => {
@@ -504,43 +721,158 @@ export default function App() {
 
   // ── Admin panel ───────────────────────────────────────────────
   if (adminMode && adminAuthed) {
+
+    // Create game form
+    if (adminView === 'create') {
+      return (
+        <div className="admin-panel">
+          <div style={{ marginBottom: '1rem' }}>
+            <button className="admin-link" onClick={() => { setAdminView('games'); setCreateGameError(''); }}>
+              ← Back to Games
+            </button>
+          </div>
+          <h2 style={{ fontFamily: 'Special Elite, cursive', fontSize: '1.4rem', marginBottom: '1.5rem' }}>
+            Create Game
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '.75rem', maxWidth: 360 }}>
+            <label style={{ fontFamily: 'Courier Prime, monospace', fontSize: '.9rem', color: '#555' }}>
+              Game Code (letters &amp; numbers only)
+            </label>
+            <input
+              className="inp"
+              placeholder="e.g. WORLDCUP"
+              value={newGameCode}
+              onChange={e => setNewGameCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+              style={{ textTransform: 'uppercase', letterSpacing: '.08em' }}
+            />
+            <label style={{ fontFamily: 'Courier Prime, monospace', fontSize: '.9rem', color: '#555' }}>
+              Teams per person
+            </label>
+            <input
+              className="inp"
+              type="number"
+              min={1}
+              max={6}
+              value={newGameTeams}
+              onChange={e => setNewGameTeams(Math.min(6, Math.max(1, Number(e.target.value))))}
+            />
+            {createGameError && <p className="signup-error">{createGameError}</p>}
+            <button
+              className="draw-btn"
+              style={{ fontSize: '1rem', padding: '.55rem 1.5rem' }}
+              onClick={handleCreateGame}
+            >
+              Create Game
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Game detail view
+    if (adminView === 'detail' && adminGameData) {
+      const gPs   = adminGameData.participants ?? [];
+      const gEms  = adminGameData.participant_emails ?? [];
+      const gAsgn = adminGameData.assignments ?? {};
+      const tpp   = adminGameData.teams_per_person ?? 2;
+      return (
+        <div className="admin-panel">
+          <div style={{ marginBottom: '1rem' }}>
+            <button className="admin-link" onClick={() => { setAdminView('games'); setAdminGameData(null); setAdminSelectedGame(null); }}>
+              ← Back to Games
+            </button>
+          </div>
+          <h2 style={{ fontFamily: 'Special Elite, cursive', fontSize: '1.4rem', marginBottom: '.25rem' }}>
+            Game: {adminSelectedGame}
+          </h2>
+          <p style={{ fontFamily: 'Courier Prime, monospace', fontSize: '.82rem', color: '#888', marginBottom: '1.5rem' }}>
+            {gPs.length} {gPs.length === 1 ? 'participant' : 'participants'} · {tpp} {tpp === 1 ? 'team' : 'teams'}/person
+          </p>
+          {gPs.length === 0 ? (
+            <p style={{ color: '#888', fontFamily: 'Special Elite, cursive' }}>No participants yet.</p>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead>
+                  <tr><th>#</th><th>Name</th><th>Email</th><th>Teams</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {gPs.map((name, i) => {
+                    const tids = gAsgn[i] || [];
+                    return (
+                      <tr key={i}>
+                        <td style={{ fontFamily: 'Oswald, sans-serif', fontWeight: 700, color: 'var(--green)', width: '2rem' }}>{i + 1}</td>
+                        <td style={{ fontFamily: 'Special Elite, cursive', whiteSpace: 'nowrap' }}>{name}</td>
+                        <td style={{ fontSize: '.8rem', color: '#666' }}>{gEms[i] || '—'}</td>
+                        <td>{tids.map(tid => { const t = getTeam(tid); return t ? `${t.flag} ${t.name}` : tid; }).join(' · ')}</td>
+                        <td><button className="btn-remove" onClick={() => handleAdminRemove(i)}>Remove</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Games list (default)
     return (
       <div className="admin-panel">
         <div style={{ marginBottom: '1rem' }}>
           <button
             className="admin-link"
-            onClick={() => { setAdminMode(false); setAdminAuthed(false); setAdminPasswordInput(''); }}
+            onClick={() => { setAdminMode(false); setAdminAuthed(false); setAdminPasswordInput(''); setAdminView('games'); }}
           >
             ← Back to Sweepstake
           </button>
         </div>
-        <h2 style={{ fontFamily: 'Special Elite, cursive', fontSize: '1.4rem', marginBottom: '.25rem' }}>
-          Admin Panel
-        </h2>
-        <p style={{ fontFamily: 'Courier Prime, monospace', fontSize: '.82rem', color: '#888', marginBottom: '1.5rem' }}>
-          {participants.length} {participants.length === 1 ? 'participant' : 'participants'}
-        </p>
-        {participants.length === 0 ? (
-          <p style={{ color: '#888', fontFamily: 'Special Elite, cursive' }}>No participants yet.</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+          <h2 style={{ fontFamily: 'Special Elite, cursive', fontSize: '1.4rem', margin: 0 }}>
+            Admin Panel
+          </h2>
+          <button
+            className="draw-btn"
+            style={{ fontSize: '.95rem', padding: '.45rem 1.2rem' }}
+            onClick={() => { setAdminView('create'); setCreateGameError(''); }}
+          >
+            + Create Game
+          </button>
+        </div>
+        {allGames.length === 0 ? (
+          <p style={{ color: '#888', fontFamily: 'Special Elite, cursive' }}>No games yet. Create one above.</p>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="tbl">
               <thead>
-                <tr><th>#</th><th>Name</th><th>Email</th><th>Teams</th><th></th></tr>
+                <tr><th>Code</th><th>Teams/Person</th><th>Players</th><th></th></tr>
               </thead>
               <tbody>
-                {participants.map((name, i) => {
-                  const tids = assignments?.[i] || [];
-                  return (
-                    <tr key={i}>
-                      <td style={{ fontFamily: 'Oswald, sans-serif', fontWeight: 700, color: 'var(--green)', width: '2rem' }}>{i + 1}</td>
-                      <td style={{ fontFamily: 'Special Elite, cursive', whiteSpace: 'nowrap' }}>{name}</td>
-                      <td style={{ fontSize: '.8rem', color: '#666' }}>{participantEmails[i] || '—'}</td>
-                      <td>{tids.map(tid => { const t = getTeam(tid); return t ? `${t.flag} ${t.name}` : tid; }).join(' · ')}</td>
-                      <td><button className="btn-remove" onClick={() => handleRemove(i)}>Remove</button></td>
-                    </tr>
-                  );
-                })}
+                {allGames.map(game => (
+                  <tr key={game.id}>
+                    <td style={{ fontFamily: 'Oswald, sans-serif', fontWeight: 700, color: 'var(--green)', letterSpacing: '.05em' }}>
+                      {game.id}
+                    </td>
+                    <td style={{ textAlign: 'center' }}>{game.teams_per_person ?? 2}</td>
+                    <td style={{ textAlign: 'center' }}>{(game.participants || []).length}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button
+                        className="draw-btn"
+                        style={{ fontSize: '.8rem', padding: '.3rem .8rem', marginRight: '.5rem' }}
+                        onClick={() => handleAdminViewGame(game.id)}
+                      >
+                        View
+                      </button>
+                      <button
+                        className="btn-remove"
+                        onClick={() => handleAdminDeleteGame(game.id)}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -569,20 +901,20 @@ export default function App() {
           <section className="rules-box">
             <h2 className="rules-title">How It Works</h2>
             <HowItWorks />
-            <p className="hiw-signup-note">Sign up with your <strong>@autone.io</strong> email — teams are assigned instantly!</p>
+            <p className="hiw-signup-note">Sign up with your <strong>@autone.io</strong> email and your game code — teams are assigned instantly!</p>
           </section>
 
           <div className="signup-box">
             <div className="mode-toggle">
               <button
                 className={`mode-btn${signupMode === 'signup' ? ' mode-btn--active' : ''}`}
-                onClick={() => { setSignupMode('signup'); setSignupError(''); setSignupEmail(''); }}
+                onClick={() => { setSignupMode('signup'); setSignupError(''); setSignupEmail(''); setShowGamePicker(false); }}
               >
                 Sign Up
               </button>
               <button
                 className={`mode-btn${signupMode === 'signin' ? ' mode-btn--active' : ''}`}
-                onClick={() => { setSignupMode('signin'); setSignupError(''); setSignupName(''); }}
+                onClick={() => { setSignupMode('signin'); setSignupError(''); setSignupName(''); setSignupCode(''); setShowGamePicker(false); }}
               >
                 Sign In
               </button>
@@ -590,6 +922,14 @@ export default function App() {
 
             {signupMode === 'signup' ? (
               <>
+                <input
+                  className="inp signup-inp"
+                  placeholder="Game code (e.g. WORLDCUP)"
+                  value={signupCode}
+                  onChange={e => setSignupCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                  onKeyDown={e => e.key === 'Enter' && handleSignup()}
+                  style={{ textTransform: 'uppercase', letterSpacing: '.06em' }}
+                />
                 <input
                   className="inp signup-inp"
                   placeholder="Your full name"
@@ -613,11 +953,31 @@ export default function App() {
                 >
                   Join Sweepstake
                 </button>
-                <p className="signup-spots">
-                  {participants.length} {participants.length === 1 ? 'person' : 'people'} joined
-                  {' · '}
-                  {Math.max(0, 48 - Object.values(assignments || {}).flat().length)} team slots remaining
+              </>
+            ) : showGamePicker ? (
+              <>
+                <p style={{ fontFamily: 'Special Elite, cursive', marginBottom: '1rem', color: '#444' }}>
+                  You&apos;re in multiple games. Pick one:
                 </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '.6rem' }}>
+                  {myGames.map(g => (
+                    <button
+                      key={g.id}
+                      className="draw-btn"
+                      style={{ fontSize: '1rem', padding: '.55rem 1.5rem' }}
+                      onClick={() => handleGamePick(g.id)}
+                    >
+                      {g.id}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  className="admin-link"
+                  style={{ marginTop: '1rem', display: 'block' }}
+                  onClick={() => { setShowGamePicker(false); setSignupError(''); }}
+                >
+                  ← Back
+                </button>
               </>
             ) : (
               <>
@@ -666,7 +1026,14 @@ export default function App() {
           Company Sweepstake
         </div>
         <div className="hdr-sub">USA · Canada · Mexico — June–July 2026</div>
-        <div style={{ position: 'relative', zIndex: 1, marginTop: '.6rem' }}>
+        {currentGameCode && (
+          <div style={{ position: 'relative', zIndex: 1, marginTop: '.3rem' }}>
+            <span style={{ fontFamily: 'Courier Prime, monospace', color: 'rgba(255,255,255,.7)', fontSize: '.78rem', letterSpacing: '.06em' }}>
+              {currentGameCode}
+            </span>
+          </div>
+        )}
+        <div style={{ position: 'relative', zIndex: 1, marginTop: '.4rem' }}>
           <span style={{ fontFamily: 'Special Elite, cursive', color: 'var(--parchment)', fontSize: '.92rem' }}>
             Welcome, {participants[myIndex]}!
           </span>

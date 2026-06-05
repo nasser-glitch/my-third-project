@@ -7,19 +7,54 @@ const supabase = createClient(
 
 export default supabase;
 
-export async function loadSweepstake() {
+export async function loadAllGames() {
+  const { data, error } = await supabase
+    .from('sweepstake')
+    .select('id, teams_per_person, participants, participant_emails')
+    .order('created_at', { ascending: false });
+  if (error) console.error('Supabase loadAllGames error:', error);
+  return data || [];
+}
+
+export async function loadSweepstake(gameCode) {
   const { data, error } = await supabase
     .from('sweepstake')
     .select('*')
-    .eq('id', 'main')
+    .eq('id', gameCode)
     .single();
   if (error) console.error('Supabase load error:', error);
   return data;
 }
 
-export async function saveSweepstake(patch) {
+export async function saveSweepstake(gameCode, patch) {
   const { error } = await supabase
     .from('sweepstake')
-    .upsert({ id: 'main', ...patch, updated_at: new Date().toISOString() });
+    .upsert({ id: gameCode, ...patch, updated_at: new Date().toISOString() });
   if (error) console.error('Supabase save error:', error);
+}
+
+export async function createGame(code, teamsPerPerson) {
+  const { error } = await supabase
+    .from('sweepstake')
+    .insert({
+      id: code,
+      teams_per_person: teamsPerPerson,
+      participants: [],
+      participant_emails: [],
+      assignments: {},
+      team_status: {},
+      dup_ids: [],
+      updated_at: new Date().toISOString(),
+    });
+  if (error) console.error('Supabase createGame error:', error);
+  return error;
+}
+
+export async function deleteGame(gameCode) {
+  const { error } = await supabase
+    .from('sweepstake')
+    .delete()
+    .eq('id', gameCode);
+  if (error) console.error('Supabase deleteGame error:', error);
+  return error;
 }
