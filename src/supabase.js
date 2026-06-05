@@ -31,6 +31,7 @@ export async function saveSweepstake(gameCode, patch) {
     .from('sweepstake')
     .upsert({ id: gameCode, ...patch, updated_at: new Date().toISOString() });
   if (error) console.error('Supabase save error:', error);
+  return error;
 }
 
 export async function createGame(code, teamsPerPerson) {

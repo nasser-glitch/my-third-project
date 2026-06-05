@@ -254,8 +254,8 @@ export default function App() {
 
   // ── Save to Supabase (debounced 1 second) ─────────────────────
   useEffect(() => {
-    if (loading || !currentGameCode) return;
     clearTimeout(saveTimerRef.current);
+    if (loading || !currentGameCode) return;
     saveTimerRef.current = setTimeout(() => {
       saveSweepstake(currentGameCode, {
         participants,
@@ -419,11 +419,6 @@ export default function App() {
     const newEmails       = [...currentEmails, email];
     const newAssignments  = { ...currentAssignments, [newIdx]: teams };
 
-    setParticipants(newParticipants);
-    setParticipantEmails(newEmails);
-    setAssignments(newAssignments);
-    setDupIds(newDupIds);
-    setTeamStatus(currentStatus);
     setTeamsPerPerson(tpp);
     setCurrentGameCode(game.id);
 
@@ -432,7 +427,7 @@ export default function App() {
     setMyEmail(email);
     setSignupError('');
 
-    saveSweepstake(game.id, {
+    const saveErr = await saveSweepstake(game.id, {
       participants: newParticipants,
       participant_emails: newEmails,
       assignments: newAssignments,
@@ -441,9 +436,59 @@ export default function App() {
       teams_per_person: tpp,
     });
 
-    const teamNames = teams.map(tid => { const t = getTeam(tid); return t ? `${t.flag} ${t.name}` : '?'; });
-    sendDrawEmail(email, name, teamNames[0] || '?', teamNames[1] || '?');
+    if (saveErr) {
+      setSignupError('Save failed — please try again.');
+      setCurrentGameCode(null);
+      localStorage.removeItem('wc2026_myemail');
+      localStorage.removeItem('wc2026_gamecode');
+      setMyEmail('');
+      return;
+    }
 
+    clearTimeout(saveTimerRef.current);
+
+    const freshData = await loadSweepstake(game.id);
+    let finalTeamNames = teams.map(tid => { const t = getTeam(tid); return t ? `${t.flag} ${t.name}` : '?'; });
+
+    if (freshData && !(freshData.participant_emails ?? []).includes(email)) {
+      // Concurrent write race — our save was overwritten; retry on the fresh snapshot
+      const fp = freshData.participants ?? [];
+      const fe = freshData.participant_emails ?? [];
+      const fa = freshData.assignments ?? {};
+      const fd = freshData.dup_ids ?? [];
+      const retryIdx = fp.length;
+      const { teams: rt, newDupIds: rd } = assignTeamsForNewSignup(fa, fd, tpp);
+      finalTeamNames = rt.map(tid => { const t = getTeam(tid); return t ? `${t.flag} ${t.name}` : '?'; });
+      await saveSweepstake(game.id, {
+        participants: [...fp, name],
+        participant_emails: [...fe, email],
+        assignments: { ...fa, [retryIdx]: rt },
+        dup_ids: rd,
+        team_status: freshData.team_status ?? {},
+        teams_per_person: tpp,
+      });
+      clearTimeout(saveTimerRef.current);
+      setParticipants([...fp, name]);
+      setParticipantEmails([...fe, email]);
+      setAssignments({ ...fa, [retryIdx]: rt });
+      setDupIds(rd);
+      setTeamStatus(freshData.team_status ?? {});
+    } else if (freshData) {
+      setParticipants(freshData.participants ?? []);
+      setParticipantEmails(freshData.participant_emails ?? []);
+      setAssignments(freshData.assignments ?? null);
+      setDupIds(freshData.dup_ids ?? []);
+      setTeamStatus(freshData.team_status ?? {});
+    } else {
+      // Could not reload after save (network issue) — use computed data, save succeeded
+      setParticipants(newParticipants);
+      setParticipantEmails(newEmails);
+      setAssignments(newAssignments);
+      setDupIds(newDupIds);
+      setTeamStatus(currentStatus);
+    }
+
+    sendDrawEmail(email, name, finalTeamNames[0] || '?', finalTeamNames[1] || '?');
     loadAllGames().then(setAllGames);
   }, [signupCode, signupName, signupEmail, allGames]);
 
@@ -452,7 +497,9 @@ export default function App() {
     const email = signupEmail.trim().toLowerCase();
     if (!email.endsWith('@autone.io')) { setSignupError('Please use your @autone.io email.'); return; }
 
-    const matching = allGames.filter(g => (g.participant_emails || []).includes(email));
+    const freshGames = await loadAllGames();
+    setAllGames(freshGames);
+    const matching = freshGames.filter(g => (g.participant_emails || []).includes(email));
 
     if (matching.length === 0) {
       setSignupError('No account found. Sign up with a game code first.');
