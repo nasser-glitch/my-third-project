@@ -10,7 +10,7 @@ function ownersOf(teamId, assignments, participants) {
 }
 
 function GroupCard({ grp, assignments, participants }) {
-  const label = (grp.group || '').replace('GROUP_', '');
+  const label = (grp.group || '').replace('GROUP_', '').replace(/^Group\s*/i, '');
   return (
     <div className="group-card">
       <div className="group-card-hdr">Group {label}</div>
