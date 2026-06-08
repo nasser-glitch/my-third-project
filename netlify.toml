@@ -1,5 +1,7 @@
+[functions]
+  directory = "netlify/functions"
+
 [[redirects]]
-  from = "/api/*"
-  to = "https://api.football-data.org/v4/:splat"
+  from = "/*"
+  to = "/index.html"
   status = 200
-  force = true

@@ -1,4 +1,3 @@
-const BASE = '/api';
 const CACHE_PREFIX = 'wc2026_';
 const FREE_TIER_LIMIT = 9; // leave 1 request as buffer against the 10/min ceiling
 
@@ -67,10 +66,7 @@ async function apiFetch(path, ttlMs, retryCount = 0) {
   await waitForSlot();
   reqTimestamps.push(Date.now());
 
-  const key = import.meta.env.VITE_FOOTBALL_API_KEY || '';
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'X-Auth-Token': key },
-  });
+  const res = await fetch(`/.netlify/functions/football?path=${encodeURIComponent(path)}`);
 
   consumeRateLimitHeaders(res);
 

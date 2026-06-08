@@ -3,7 +3,7 @@ import { TEAMS } from './data.js';
 import { shuffle, getTeam, findTeamId, getLoserTeamId, getWinnerTeamId, isLive, computeTeamProgress, PROGRESS_LABELS, computeParticipantPoints, formatRoundLabel, getWcRank } from './utils.js';
 import { fetchTodaysMatches, fetchAllMatches, fetchStandings, fetchNextMatch } from './api.js';
 import { sendDrawEmail } from './email.js';
-import supabase, { loadAllGames, loadSweepstake, saveSweepstake, createGame, deleteGame } from './supabase.js';
+import { loadAllGames, loadSweepstake, saveSweepstake, createGame, deleteGame } from './supabase.js';
 
 import TeamPill       from './components/TeamPill.jsx';
 import Ticker         from './components/Ticker.jsx';
@@ -268,25 +268,20 @@ export default function App() {
     }, 1000);
   }, [participants, assignments, teamStatus, dupIds, participantEmails, loading, currentGameCode, teamsPerPerson]);
 
-  // ── Real-time sync for current game ──────────────────────────
+  // ── Poll for game updates every 5 seconds ────────────────────
   useEffect(() => {
     if (!currentGameCode) return;
-    const channel = supabase
-      .channel(`sweepstake-${currentGameCode}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'sweepstake', filter: `id=eq.${currentGameCode}` },
-        payload => {
-          const row = payload.new;
-          setParticipants(row.participants ?? []);
-          setAssignments(row.assignments ?? null);
-          setTeamStatus(row.team_status ?? {});
-          setDupIds(row.dup_ids ?? []);
-          setParticipantEmails(row.participant_emails ?? []);
-        }
-      )
-      .subscribe();
-    return () => supabase.removeChannel(channel);
+    const id = setInterval(async () => {
+      const data = await loadSweepstake(currentGameCode);
+      if (data) {
+        setParticipants(data.participants ?? []);
+        setAssignments(data.assignments ?? null);
+        setTeamStatus(data.team_status ?? {});
+        setDupIds(data.dup_ids ?? []);
+        setParticipantEmails(data.participant_emails ?? []);
+      }
+    }, 5000);
+    return () => clearInterval(id);
   }, [currentGameCode]);
 
   // ── API refresh ───────────────────────────────────────────────
