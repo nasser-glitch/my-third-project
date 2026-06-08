@@ -420,10 +420,8 @@ export default function App() {
     const newAssignments  = { ...currentAssignments, [newIdx]: teams };
 
     setTeamsPerPerson(tpp);
-    setCurrentGameCode(game.id);
 
     localStorage.setItem('wc2026_myemail', email);
-    localStorage.setItem('wc2026_gamecode', game.id);
     setMyEmail(email);
     setSignupError('');
 
@@ -438,9 +436,7 @@ export default function App() {
 
     if (saveErr) {
       setSignupError('Save failed — please try again.');
-      setCurrentGameCode(null);
       localStorage.removeItem('wc2026_myemail');
-      localStorage.removeItem('wc2026_gamecode');
       setMyEmail('');
       return;
     }
@@ -487,6 +483,11 @@ export default function App() {
       setDupIds(newDupIds);
       setTeamStatus(currentStatus);
     }
+
+    // Set currentGameCode only after state is correctly loaded — prevents the debounced
+    // save from firing with empty state (which would wipe all participant data from the DB).
+    setCurrentGameCode(game.id);
+    localStorage.setItem('wc2026_gamecode', game.id);
 
     sendDrawEmail(email, name, finalTeamNames[0] || '?', finalTeamNames[1] || '?');
     loadAllGames().then(setAllGames);
