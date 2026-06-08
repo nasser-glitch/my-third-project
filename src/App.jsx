@@ -383,8 +383,6 @@ export default function App() {
 
     if (!code)                         { setSignupError('Please enter a game code.'); return; }
     if (!name)                         { setSignupError('Please enter your name.'); return; }
-    if (!email.endsWith('@autone.io')) { setSignupError('Please use your @autone.io email.'); return; }
-
     const game = allGames.find(g => g.id.toUpperCase() === code);
     if (!game) { setSignupError('Game code not found. Check with your admin.'); return; }
 
@@ -496,8 +494,6 @@ export default function App() {
   // ── Sign-in ───────────────────────────────────────────────────
   const handleSignIn = useCallback(async () => {
     const email = signupEmail.trim().toLowerCase();
-    if (!email.endsWith('@autone.io')) { setSignupError('Please use your @autone.io email.'); return; }
-
     const freshGames = await loadAllGames();
     setAllGames(freshGames);
     const matching = freshGames.filter(g => (g.participant_emails || []).includes(email));
@@ -949,7 +945,7 @@ export default function App() {
           <section className="rules-box">
             <h2 className="rules-title">How It Works</h2>
             <HowItWorks />
-            <p className="hiw-signup-note">Sign up with your <strong>@autone.io</strong> email and your game code — teams are assigned instantly!</p>
+            <p className="hiw-signup-note">Sign up with your email and your game code — teams are assigned instantly!</p>
           </section>
 
           <div className="signup-box">
@@ -988,7 +984,7 @@ export default function App() {
                 <input
                   className="inp signup-inp"
                   type="email"
-                  placeholder="you@autone.io"
+                  placeholder="you@example.com"
                   value={signupEmail}
                   onChange={e => setSignupEmail(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSignup()}
@@ -1032,7 +1028,7 @@ export default function App() {
                 <input
                   className="inp signup-inp"
                   type="email"
-                  placeholder="you@autone.io"
+                  placeholder="you@example.com"
                   value={signupEmail}
                   onChange={e => setSignupEmail(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSignIn()}
