@@ -841,9 +841,11 @@ body::after {
 .section-title { font-family: 'Oswald', sans-serif; font-size: 1.1rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--green); border-bottom: 3px solid var(--gold); padding-bottom: .4rem; margin-bottom: 1rem; }
 .my-points { margin-top: 1rem; font-size: .95rem; }
 
-/* ── Sign-out button ──────────────────────── */
+/* ── Header buttons ───────────────────────── */
 .btn-signout { background: none; border: 1px solid rgba(255,255,255,.4); border-radius: 4px; padding: .3rem .75rem; font-size: .78rem; cursor: pointer; font-family: 'Courier Prime', monospace; color: var(--parchment); transition: all .1s; }
 .btn-signout:hover { background: rgba(255,255,255,.15); border-color: var(--parchment); }
+.btn-switch-league { background: none; border: 1px solid rgba(255,255,255,.4); border-radius: 4px; padding: .3rem .75rem; font-size: .78rem; cursor: pointer; font-family: 'Courier Prime', monospace; color: rgba(255,255,255,.75); transition: all .1s; }
+.btn-switch-league:hover { background: rgba(255,255,255,.15); border-color: var(--parchment); color: var(--parchment); }
 
 /* ── Admin login overlay ──────────────────── */
 .admin-login { max-width: 320px; width: 100%; padding: 2rem; border: 3px solid var(--ink); border-radius: 6px; background: var(--cream); text-align: center; }

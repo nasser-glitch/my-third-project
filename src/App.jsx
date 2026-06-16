@@ -565,6 +565,32 @@ export default function App() {
     setMyGames([]);
   }, []);
 
+  // ── Switch league (keep email, re-fetch games, show picker) ───
+  const handleSwitchLeague = useCallback(async () => {
+    const email = myEmail;
+    localStorage.removeItem('wc2026_gamecode');
+    setCurrentGameCode(null);
+    setParticipants([]);
+    setAssignments(null);
+    setTeamStatus({});
+    setDupIds([]);
+    setParticipantEmails([]);
+    setTeamsPerPerson(2);
+    setSignupError('');
+    setSignupMode('signin');
+    setSignupEmail(email);
+    setSignupName('');
+    setSignupCode('');
+
+    const freshGames = await loadAllGames();
+    setAllGames(freshGames);
+    const matching = freshGames.filter(g => (g.participant_emails || []).includes(email));
+    if (matching.length > 1) {
+      setMyGames(matching);
+      setShowGamePicker(true);
+    }
+  }, [myEmail]);
+
   // ── Admin login ───────────────────────────────────────────────
   const handleAdminLogin = useCallback(() => {
     const correct = import.meta.env.VITE_ADMIN_PASSWORD;
@@ -1076,7 +1102,10 @@ export default function App() {
           <span style={{ fontFamily: 'Special Elite, cursive', color: 'var(--parchment)', fontSize: '.92rem' }}>
             Welcome, {participants[myIndex]}!
           </span>
-          <button className="btn-signout" onClick={handleSignOut} style={{ marginLeft: '1rem' }}>
+          <button className="btn-switch-league" onClick={handleSwitchLeague} style={{ marginLeft: '1rem' }}>
+            Switch League
+          </button>
+          <button className="btn-signout" onClick={handleSignOut} style={{ marginLeft: '.5rem' }}>
             Sign Out
           </button>
         </div>
