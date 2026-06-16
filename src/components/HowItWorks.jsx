@@ -9,17 +9,18 @@ export default function HowItWorks() {
 
       <div className="hiw-section">
         <h3 className="hiw-section-title">Group Stage</h3>
-        <p className="hiw-section-note">Each win scores independently — points accumulate across all 3 matches.</p>
+        <p className="hiw-section-note">Points accumulate across all 3 matches.</p>
         <table className="hiw-table">
           <thead>
             <tr><th>Result</th><th>Points</th></tr>
           </thead>
           <tbody>
-            <tr><td>Win</td><td className="hiw-pts">+2 pts</td></tr>
-            <tr><td>Draw or Loss</td><td className="hiw-pts hiw-zero">0 pts</td></tr>
+            <tr><td>Win</td><td className="hiw-pts">+3 pts</td></tr>
+            <tr><td>Draw</td><td className="hiw-pts">+1 pt</td></tr>
+            <tr><td>Loss</td><td className="hiw-pts hiw-zero">0 pts</td></tr>
           </tbody>
         </table>
-        <p className="hiw-example">e.g. 3 wins in the group stage = 6 pts total</p>
+        <p className="hiw-example">e.g. 3 wins in the group stage = 9 pts total</p>
       </div>
 
       <div className="hiw-section">
@@ -62,7 +63,7 @@ export default function HowItWorks() {
 
       <div className="hiw-formula">
         <span className="hiw-formula-label">Formula</span>
-        <span className="hiw-formula-text">(group wins × 2 + knockout pts) × underdog multiplier</span>
+        <span className="hiw-formula-text">(group pts + knockout pts) × underdog multiplier</span>
       </div>
     </div>
   );

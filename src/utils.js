@@ -145,7 +145,7 @@ export const PROGRESS_LABELS = [
 ];
 
 // Points by highest knockout round reached (indexed by computeTeamProgress 0–8).
-// Group stage wins are handled separately (2pts each) and are always additive.
+// Group stage results are handled separately (win=3pts, draw=1pt) and are always additive.
 const KNOCKOUT_PTS = [0, 0, 3, 5, 8, 12, 15, 17, 20];
 
 // WC-relative rank: position among 48 WC teams sorted by FIFA rank (1=best, 48=worst).
@@ -168,18 +168,23 @@ function getUnderdogMultiplier(teamId) {
   return 1.4;
 }
 
-function computeGroupWins(teamId, allMatches) {
-  return allMatches.filter(m =>
-    m.status === 'FINISHED' &&
-    m.stage === 'GROUP_STAGE' &&
-    getWinnerTeamId(m) === teamId
-  ).length;
+function computeGroupPts(teamId, allMatches) {
+  return allMatches
+    .filter(m => m.status === 'FINISHED' && m.stage === 'GROUP_STAGE')
+    .reduce((pts, m) => {
+      const hId = findTeamId(m.homeTeam);
+      const aId = findTeamId(m.awayTeam);
+      if (hId !== teamId && aId !== teamId) return pts;
+      const winner = m.score?.winner;
+      if (!winner || winner === 'DRAW') return pts + 1;
+      return pts + (getWinnerTeamId(m) === teamId ? 3 : 0);
+    }, 0);
 }
 
 export function computeParticipantPoints(tids, allMatches) {
   return tids.reduce((sum, teamId) => {
-    const multiplier = getUnderdogMultiplier(teamId);
-    const groupPts   = computeGroupWins(teamId, allMatches) * 2;
+    const multiplier  = getUnderdogMultiplier(teamId);
+    const groupPts    = computeGroupPts(teamId, allMatches);
     const knockoutPts = KNOCKOUT_PTS[computeTeamProgress(teamId, allMatches)] ?? 0;
     return sum + (groupPts + knockoutPts) * multiplier;
   }, 0);
