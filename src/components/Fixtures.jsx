@@ -14,8 +14,8 @@ function MatchRow({ match, myTeamIds, participants, assignments, showDate }) {
   const homeWcRank = homeId ? getWcRank(homeId) : null;
   const awayWcRank = awayId ? getWcRank(awayId) : null;
 
-  const homeOwner = homeId && assignments ? findOwner(homeId, assignments, participants) : null;
-  const awayOwner = awayId && assignments ? findOwner(awayId, assignments, participants) : null;
+  const homeOwners = homeId && assignments ? findOwners(homeId, assignments, participants) : [];
+  const awayOwners = awayId && assignments ? findOwners(awayId, assignments, participants) : [];
 
   const d = new Date(match.utcDate);
   const dateStr = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/London' });
@@ -62,13 +62,13 @@ function MatchRow({ match, myTeamIds, participants, assignments, showDate }) {
         <span className="fix-flag">{homeFlag}</span>
         <span className="fix-name">{match.homeTeam?.shortName || match.homeTeam?.name}</span>
         {homeWcRank && <span className="fix-wc-rank">#{homeWcRank}</span>}
-        {homeOwner && <span className="fix-owner">{homeOwner}</span>}
+        {homeOwners.map(o => <span key={o} className="fix-owner">{o}</span>)}
       </div>
 
       {scoreDisplay}
 
       <div className={`fix-team fix-away ${awayHighlight ? 'fix-my-team' : ''}`}>
-        {awayOwner && <span className="fix-owner">{awayOwner}</span>}
+        {awayOwners.map(o => <span key={o} className="fix-owner">{o}</span>)}
         {awayWcRank && <span className="fix-wc-rank">#{awayWcRank}</span>}
         <span className="fix-name">{match.awayTeam?.shortName || match.awayTeam?.name}</span>
         <span className="fix-flag">{awayFlag}</span>
@@ -81,14 +81,17 @@ function MatchRow({ match, myTeamIds, participants, assignments, showDate }) {
   );
 }
 
-function findOwner(teamId, assignments, participants) {
-  if (!assignments) return null;
-  const entry = Object.entries(assignments).find(([, tids]) => tids.includes(teamId));
-  if (!entry) return null;
-  const name = participants[parseInt(entry[0], 10)];
-  if (!name) return null;
-  const parts = name.split(' ');
-  return parts[0] + (parts[1] ? ' ' + parts[1][0] + '.' : '');
+function findOwners(teamId, assignments, participants) {
+  if (!assignments) return [];
+  return Object.entries(assignments)
+    .filter(([, tids]) => tids.includes(teamId))
+    .map(([idx]) => {
+      const name = participants[parseInt(idx, 10)];
+      if (!name) return null;
+      const parts = name.split(' ');
+      return parts[0] + (parts[1] ? ' ' + parts[1][0] + '.' : '');
+    })
+    .filter(Boolean);
 }
 
 export default function Fixtures({ allMatches, assignments, participants, lastUpdated, myTeamIds: myTeamIdsProp }) {

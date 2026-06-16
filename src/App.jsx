@@ -1120,14 +1120,14 @@ export default function App() {
                         {getWcRank(tid) && (
                           <div className="my-team-wcrank">WC Rank #{getWcRank(tid)}</div>
                         )}
-                        <div className="my-team-pts">{pts} pts</div>
+                        <div className="my-team-pts">{+pts.toFixed(2)} pts</div>
                         {s === 'eliminated' && <div className="my-team-status">OUT</div>}
                         {s === 'champion'   && <div className="my-team-status">🏆 CHAMPION</div>}
                       </div>
                     );
                   })}
                 </div>
-                <p className="my-points">Total: <strong>{myPoints} pts</strong></p>
+                <p className="my-points">Total: <strong>{+myPoints.toFixed(2)} pts</strong></p>
               </>
             ) : (
               <p style={{ color: '#888', fontFamily: 'Special Elite, cursive' }}>No teams assigned yet.</p>
@@ -1162,7 +1162,7 @@ export default function App() {
                           {name}{i === myIndex ? ' 👈' : ''}
                         </td>
                         <td>{tids.map(tid => <TeamPill key={tid} tid={tid} status={teamStatus[tid] || 'active'} />)}</td>
-                        <td className="pts-cell">{pts}<span className="pts-label">pts</span></td>
+                        <td className="pts-cell">{+pts.toFixed(2)}<span className="pts-label">pts</span></td>
                       </tr>
                     ))}
                   </tbody>
