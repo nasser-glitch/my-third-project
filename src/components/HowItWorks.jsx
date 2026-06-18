@@ -52,10 +52,10 @@ export default function HowItWorks() {
             <tr><th>WC Rank</th><th>Multiplier</th></tr>
           </thead>
           <tbody>
-            <tr><td>1 – 10</td><td className="hiw-pts hiw-dim">×1.0 — no bonus</td></tr>
-            <tr><td>11 – 20</td><td className="hiw-pts">×1.1</td></tr>
-            <tr><td>21 – 32</td><td className="hiw-pts">×1.25</td></tr>
-            <tr><td>33 – 48</td><td className="hiw-pts">×1.4</td></tr>
+            <tr><td>1 – 12</td><td className="hiw-pts hiw-dim">×1.0 — no bonus</td></tr>
+            <tr><td>13 – 24</td><td className="hiw-pts">×1.25</td></tr>
+            <tr><td>25 – 36</td><td className="hiw-pts">×1.5</td></tr>
+            <tr><td>37 – 48</td><td className="hiw-pts">×2.0</td></tr>
           </tbody>
         </table>
         <p className="hiw-example">WC rank = team's position among the 48 qualified nations by FIFA ranking (1 = highest ranked)</p>

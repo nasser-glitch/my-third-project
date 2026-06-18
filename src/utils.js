@@ -162,10 +162,10 @@ export function getWcRank(teamId) {
 
 function getUnderdogMultiplier(teamId) {
   const wcRank = WC_RANKS[teamId] ?? 48;
-  if (wcRank <= 10) return 1;
-  if (wcRank <= 20) return 1.1;
-  if (wcRank <= 32) return 1.25;
-  return 1.4;
+  if (wcRank <= 12) return 1;
+  if (wcRank <= 24) return 1.25;
+  if (wcRank <= 36) return 1.5;
+  return 2;
 }
 
 function computeGroupPts(teamId, allMatches) {
