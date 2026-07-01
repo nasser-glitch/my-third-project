@@ -66,13 +66,15 @@ const KNOCKOUT_STAGES = ['LAST_32','LAST_16','QUARTER_FINALS','SEMI_FINALS','THI
 function computeEliminations(allMatches, standings, assignments, participants, prevStatus) {
   if (!assignments) return { newStatus: prevStatus, toasts: [] };
 
-  const newStatus = { ...prevStatus };
+  // Always recompute from scratch so stale/incorrect persisted statuses are cleared.
+  const newStatus = {};
   const toasts = [];
 
   function markEliminated(teamId) {
     if (newStatus[teamId] === 'eliminated' || newStatus[teamId] === 'champion') return;
     newStatus[teamId] = 'eliminated';
-
+    // Only toast on a status transition
+    if (prevStatus[teamId] === 'eliminated' || prevStatus[teamId] === 'champion') return;
     Object.entries(assignments).forEach(([pIdx, tids]) => {
       if (!tids.includes(teamId)) return;
       const name = participants[parseInt(pIdx, 10)];
@@ -90,6 +92,7 @@ function computeEliminations(allMatches, standings, assignments, participants, p
   function markChampion(teamId) {
     if (newStatus[teamId] === 'champion') return;
     newStatus[teamId] = 'champion';
+    if (prevStatus[teamId] === 'champion') return;
     Object.entries(assignments).forEach(([pIdx, tids]) => {
       if (!tids.includes(teamId)) return;
       toasts.push({
@@ -101,20 +104,43 @@ function computeEliminations(allMatches, standings, assignments, participants, p
     });
   }
 
+  // Group stage: only mark 4th-place teams (definite elimination).
+  // 3rd-place teams may still advance as one of the 8 best 3rd-place finishers —
+  // we handle them below once LAST_32 fixtures are known.
+  const thirdPlaceIds = new Set();
   if (standings?.length) {
     standings.forEach(grp => {
       if (grp.type !== 'TOTAL') return;
       const table = grp.table || [];
       const allPlayed3 = table.length === 4 && table.every(r => r.playedGames >= 3);
       if (allPlayed3) {
-        table.slice(2).forEach(row => {
-          const tid = findTeamId(row.team);
-          if (tid) markEliminated(tid);
-        });
+        const tid4 = table[3] ? findTeamId(table[3].team) : null;
+        if (tid4) markEliminated(tid4);
+        const tid3 = table[2] ? findTeamId(table[2].team) : null;
+        if (tid3) thirdPlaceIds.add(tid3);
       }
     });
   }
 
+  // Collect all teams that appear in any LAST_32 fixture (scheduled or played).
+  // If this set is non-empty the 8 best 3rd-place selections are finalised,
+  // so any 3rd-place team not in the set is eliminated.
+  const last32Teams = new Set();
+  if (allMatches?.length) {
+    allMatches.filter(m => m.stage === 'LAST_32').forEach(m => {
+      const hId = findTeamId(m.homeTeam);
+      const aId = findTeamId(m.awayTeam);
+      if (hId) last32Teams.add(hId);
+      if (aId) last32Teams.add(aId);
+    });
+  }
+  if (last32Teams.size > 0) {
+    thirdPlaceIds.forEach(tid => {
+      if (!last32Teams.has(tid)) markEliminated(tid);
+    });
+  }
+
+  // Knockout stage: loser of each finished match is eliminated; winner of final is champion.
   if (allMatches?.length) {
     allMatches.filter(m => m.status === 'FINISHED' && KNOCKOUT_STAGES.includes(m.stage))
       .forEach(m => {
@@ -357,7 +383,8 @@ export default function App() {
     const { newStatus, toasts: newToasts } = computeEliminations(
       allMatches, standings, assignRef.current, partRef.current, statusRef.current
     );
-    const changed = Object.keys(newStatus).some(k => newStatus[k] !== statusRef.current[k]);
+    const allKeys = new Set([...Object.keys(newStatus), ...Object.keys(statusRef.current)]);
+    const changed = [...allKeys].some(k => newStatus[k] !== statusRef.current[k]);
     if (changed) {
       setTeamStatus(newStatus);
       if (newToasts.length) setToasts(prev => [...prev, ...newToasts]);
